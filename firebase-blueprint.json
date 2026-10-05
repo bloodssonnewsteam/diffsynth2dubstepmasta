@@ -1,0 +1,50 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile and account information",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "displayName": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "email"]
+    },
+    "SavedSong": {
+      "title": "SavedSong",
+      "description": "Full-stack generated song saved in user library",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "prompt": { "type": "string" },
+        "genre": { "type": "string" },
+        "bpm": { "type": "number" },
+        "key": { "type": "string" },
+        "vocalStyle": { "type": "string" },
+        "mood": { "type": "string" },
+        "category": { "type": "string" },
+        "notes": { "type": "string" },
+        "tags": { "type": "array" },
+        "durationSec": { "type": "number" },
+        "songData": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "title", "prompt", "songData"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile document keyed by auth UID"
+    },
+    "/users/{userId}/savedSongs/{songId}": {
+      "schema": "SavedSong",
+      "description": "User's saved songs in their personal library"
+    }
+  }
+}
