@@ -78,8 +78,8 @@ export class LibraryService {
               tags: ['Deep Dubstep', 'Rolling Bass', '140 BPM', 'D Minor', '3-Min Full Mix'],
               durationSec: PRESET_SONGS[0].durationSec,
               songData: PRESET_SONGS[0],
-              createdAt: PRESET_SONGS[0].diffusionMeta.generatedAt,
-              updatedAt: PRESET_SONGS[0].diffusionMeta.generatedAt,
+              createdAt: PRESET_SONGS[0].synthesisMeta.generatedAt,
+              updatedAt: PRESET_SONGS[0].synthesisMeta.generatedAt,
             };
             const updated = [dubstepSeed, ...parsed];
             this.saveLocalSongs(updated);
@@ -109,12 +109,12 @@ export class LibraryService {
         : song.genre.includes('City')
         ? 'City Pop & Funk'
         : 'Lo-Fi & Chill',
-      notes: `Generated with DiffRhythm 2. DiT-Audio-Large model, ${song.diffusionMeta.steps} denoising steps.`,
+      notes: 'Procedurally arranged and synthesized with the studio Web Audio engine.',
       tags: [song.genre, song.vocalStyle, `${song.bpm} BPM`, song.key],
       durationSec: song.durationSec,
       songData: song,
-      createdAt: song.diffusionMeta.generatedAt,
-      updatedAt: song.diffusionMeta.generatedAt,
+      createdAt: song.synthesisMeta.generatedAt,
+      updatedAt: song.synthesisMeta.generatedAt,
     }));
 
     this.saveLocalSongs(seeded);

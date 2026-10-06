@@ -16,6 +16,8 @@ import {
   Check,
   Music,
   Share2,
+  ThumbsDown,
+  ThumbsUp,
 } from 'lucide-react';
 import { Song, StemType } from '../types/music';
 import { formatTime, downloadBlob } from '../utils/audioMath';
@@ -30,6 +32,7 @@ interface PlayerTransportProps {
   onStop: () => void;
   onSeek: (time: number) => void;
   onSaveToLibrary: () => void;
+  onRateSong: (feedback: 'like' | 'dislike') => void;
   isSaved?: boolean;
 }
 
@@ -42,6 +45,7 @@ export const PlayerTransport: React.FC<PlayerTransportProps> = ({
   onStop,
   onSeek,
   onSaveToLibrary,
+  onRateSong,
   isSaved = false,
 }) => {
   const [masterVolume, setMasterVolume] = useState(0.85);
@@ -104,22 +108,14 @@ export const PlayerTransport: React.FC<PlayerTransportProps> = ({
   const handleExportStems = async () => {
     if (isExporting) return;
     setIsExporting(true);
-    const tenStemsOrder: StemType[] = [
-      'sub_bass',
-      'mid_bass',
-      'drums_kick_snare',
-      'percussion_cymbals',
-      'lead_synth',
-      'chords_harmony',
-      'atmosphere_pad',
-      'lead_vocals',
-      'backing_vocals',
-      'fx_transitions',
-    ];
-    const has10 = tenStemsOrder.some((k) => !!song.stems[k]);
-    const stemTypes: StemType[] = has10
-      ? tenStemsOrder.filter((k) => !!song.stems[k])
-      : (['vocals', 'lead', 'chords', 'bass', 'drums', 'fx'] as StemType[]);
+    const stemTypes = Object.entries(song.stems)
+      .filter(([, stem]) => stem && !stem.muted && stem.notes?.length)
+      .map(([stemId]) => stemId as StemType);
+    if (stemTypes.length === 0) {
+      setIsExporting(false);
+      setExportProgressText('');
+      return;
+    }
 
     const safeTitle = song.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
 
@@ -191,6 +187,36 @@ export const PlayerTransport: React.FC<PlayerTransportProps> = ({
 
         {/* Action Buttons */}
         <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => onRateSong('like')}
+            disabled={!song.mixProfileId}
+            aria-label="Like this mix"
+            aria-pressed={song.userFeedback === 'like'}
+            title={song.mixProfileId ? 'Prefer this mix profile' : 'Generate a song before rating its mix profile'}
+            className={`p-2 border rounded-xl transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+              song.userFeedback === 'like'
+                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
+                : 'bg-zinc-900 hover:bg-zinc-800 text-zinc-400 border-zinc-800'
+            }`}
+          >
+            <ThumbsUp size={14} />
+          </button>
+          <button
+            type="button"
+            onClick={() => onRateSong('dislike')}
+            disabled={!song.mixProfileId}
+            aria-label="Dislike this mix"
+            aria-pressed={song.userFeedback === 'dislike'}
+            title={song.mixProfileId ? 'Avoid this mix profile for similar songs' : 'Generate a song before rating its mix profile'}
+            className={`p-2 border rounded-xl transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+              song.userFeedback === 'dislike'
+                ? 'bg-rose-500/15 text-rose-300 border-rose-500/40'
+                : 'bg-zinc-900 hover:bg-zinc-800 text-zinc-400 border-zinc-800'
+            }`}
+          >
+            <ThumbsDown size={14} />
+          </button>
           <button
             onClick={onSaveToLibrary}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-colors cursor-pointer border ${
@@ -351,7 +377,11 @@ export const PlayerTransport: React.FC<PlayerTransportProps> = ({
           </button>
 
           <button
-            onClick={() => setIsLooping(!isLooping)}
+            onClick={() => {
+              const nextLoopState = !isLooping;
+              setIsLooping(nextLoopState);
+              audioEngine.setLoopEnabled(nextLoopState);
+            }}
             className={`p-2.5 border rounded-xl transition-colors cursor-pointer ${
               isLooping
                 ? 'bg-cyan-500/15 text-cyan-400 border-cyan-500/40'

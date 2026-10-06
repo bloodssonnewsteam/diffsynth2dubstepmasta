@@ -3,7 +3,7 @@
  */
 
 import React from 'react';
-import { Disc3, Library, User as UserIcon, LogOut, Sparkles, Layers, Sliders, Music2 } from 'lucide-react';
+import { Disc3, Library, User as UserIcon, LogOut, Sparkles, Layers, Sliders, Music2, Youtube } from 'lucide-react';
 import { Song } from '../types/music';
 
 interface HeaderProps {
@@ -15,6 +15,7 @@ interface HeaderProps {
   user: any;
   onLogout: () => void;
   savedSongsCount: number;
+  onOpenReferences: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -26,6 +27,7 @@ export const Header: React.FC<HeaderProps> = ({
   user,
   onLogout,
   savedSongsCount,
+  onOpenReferences,
 }) => {
   return (
     <header className="sticky top-0 z-40 w-full bg-zinc-950/90 backdrop-blur-md border-b border-zinc-800/80 px-4 py-2.5">
@@ -42,10 +44,10 @@ export const Header: React.FC<HeaderProps> = ({
               <div className="flex items-center gap-1.5">
                 <span className="font-black text-base tracking-tight text-white">DiffRhythm</span>
                 <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/30">
-                  2.0 DiT
+                  STUDIO
                 </span>
               </div>
-              <p className="text-[10px] text-zinc-400 leading-none">Full-Stack AI Music Synthesis</p>
+              <p className="text-[10px] text-zinc-400 leading-none">Procedural Multi-Track Synthesis</p>
             </div>
           </div>
 
@@ -105,6 +107,15 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Right Tools: Library & User Auth */}
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onOpenReferences}
+            title="Search YouTube and save metadata-based music references"
+            aria-label="Open YouTube music references"
+            className="p-2 bg-zinc-900 hover:bg-zinc-800 text-rose-300 border border-zinc-800 rounded-xl transition-colors cursor-pointer"
+          >
+            <Youtube size={15} />
+          </button>
           {/* Song Library Button */}
           <button
             onClick={onOpenLibrary}

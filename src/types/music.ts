@@ -48,6 +48,25 @@ export interface NoteEvent {
   wobbleRate?: number; // LFO modulation rate in Hz for rolling bass
 }
 
+export type SynthPatchFamily = 'bass' | 'lead' | 'pad';
+
+export interface SynthPatch {
+  oscillatorType: OscillatorType;
+  detuneCents: number;
+  filterCutoffHz: number;
+  resonance: number;
+  attackSeconds: number;
+  releaseSeconds: number;
+  lfoRateHz: number;
+  distortion: number;
+}
+
+export interface StemMixSettings {
+  lowCutHz: number;
+  highCutHz: number;
+  reverbSend: number;
+}
+
 // 10-Stem Studio Architecture (plus legacy aliases for compatibility)
 export type StemType =
   | 'lead_vocals'
@@ -78,6 +97,8 @@ export interface StemTrack {
   muted: boolean;
   solo: boolean;
   notes: NoteEvent[];
+  synthPatch?: SynthPatch;
+  mixSettings?: StemMixSettings;
 }
 
 export interface ChordEvent {
@@ -140,19 +161,19 @@ export interface Song {
     acousticness: number;
     spaceReverb: number;
   };
-  diffusionMeta: {
-    steps: number;
-    cfgScale: number;
-    sampler: string;
+  synthesisMeta: {
     seed: number;
     model: string;
     generatedAt: string;
-    compositionMethod?: '3-part-multi-movement' | '100-stage-melded' | 'monolithic';
+    compositionMethod?: '3-part-multi-movement' | '100-stage-melded' | 'monolithic' | 'procedural-composition';
   };
   parts?: SongMovementPart[];
   stages?: SongStageBlock[];
   comprehension?: MusicComprehensionData;
   variance?: number; // 0 to 1 (stochasticity / chaotic wub mutations)
+  mixProfileId?: string;
+  userFeedback?: 'like' | 'dislike';
+  motifSignature?: string[];
   chordsProgression: ChordEvent[];
   lyrics: LyricLine[];
   stems: Record<StemType | string, StemTrack>;
@@ -160,10 +181,10 @@ export interface Song {
 
 export interface SongGenerationParams {
   prompt: string;
+  genre?: string;
+  referenceNotes?: string;
+  recentMotifs?: string[][];
   durationSec?: number; // Target length in seconds: 180 (3 min), 210 (3.5 min), 240 (4 min)
-  diffusionSteps?: number;
-  cfgScale?: number;
-  sampler?: 'Euler-A' | 'DPM++ 2M SDE' | 'DDIM';
   vocalStyle?: string;
   lyricsMode?: 'auto' | 'custom';
   customLyrics?: string;
@@ -173,4 +194,29 @@ export interface SongGenerationParams {
   wubSpeed?: string;
   buildDropDensity?: number; // up to 100
   selectedStems?: string[];
+}
+
+export interface MusicReference {
+  videoId: string;
+  title: string;
+  channelTitle: string;
+  publishedAt: string;
+  thumbnailUrl: string;
+  url: string;
+  genre: string;
+  bpm?: number;
+  key?: string;
+  moodCues: string[];
+  productionCues: string[];
+  styleNotes: string;
+  influence: number;
+  addedAt: string;
+}
+
+export interface YouTubeSearchResult {
+  videoId: string;
+  title: string;
+  channelTitle: string;
+  publishedAt: string;
+  thumbnailUrl: string;
 }

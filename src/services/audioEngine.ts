@@ -2,7 +2,7 @@
  * DiffRhythm 2 - Web Audio API Full-Stack Synthesis & Playback Engine
  */
 
-import { Song, StemType, NoteEvent, ChordEvent } from '../types/music';
+import { Song, StemType, NoteEvent, ChordEvent, SynthPatch, StemMixSettings, StemTrack } from '../types/music';
 import { noteToFreq, audioBufferToWav } from '../utils/audioMath';
 
 // Formant vowel frequencies for vocal synthesizer
@@ -14,11 +14,28 @@ const VOWEL_FORMANTS: Record<string, { f1: number; f2: number; q1: number; q2: n
   u: { f1: 320, f2: 800, q1: 5, q2: 6 },
 };
 
+function defaultStemMixSettings(stemId: string, stemName: string): StemMixSettings {
+  const id = stemId.toLowerCase();
+  const name = stemName.toLowerCase();
+  if ((id.startsWith('sub_') || id === 'sub_bass') && !id.includes('click')) return { lowCutHz: 25, highCutHz: 180, reverbSend: 0 };
+  if (id === 'mid_bass' || id === 'bass' || id.startsWith('wub_')) return { lowCutHz: 65, highCutHz: 6500, reverbSend: 0.04 };
+  if (id.includes('kick')) return { lowCutHz: 28, highCutHz: 9000, reverbSend: 0 };
+  if (id.includes('snare') || id.includes('clap')) return { lowCutHz: 100, highCutHz: 14000, reverbSend: 0.08 };
+  if (id.startsWith('perc_') || id === 'percussion_cymbals') return { lowCutHz: /hat|cymbal|ride/.test(`${id} ${name}`) ? 1600 : 300, highCutHz: 18000, reverbSend: 0.06 };
+  if (id.includes('vocal')) return { lowCutHz: 100, highCutHz: 15000, reverbSend: id.includes('backing') ? 0.28 : 0.14 };
+  if (id.startsWith('lead_') || id === 'lead') return { lowCutHz: 140, highCutHz: 16000, reverbSend: 0.12 };
+  if (id.startsWith('chord_') || id.includes('chords')) return { lowCutHz: 110, highCutHz: 11000, reverbSend: 0.22 };
+  if (id.startsWith('atmo_') || id.includes('atmosphere') || name.includes('drone')) return { lowCutHz: 70, highCutHz: 9000, reverbSend: 0.38 };
+  if (id.startsWith('rise_') || id.startsWith('drop_') || id.includes('fx')) return { lowCutHz: 45, highCutHz: 16000, reverbSend: 0.12 };
+  return { lowCutHz: 100, highCutHz: 16000, reverbSend: 0.1 };
+}
+
 export class AudioEngine {
   private static instance: AudioEngine | null = null;
   private ctx: AudioContext | null = null;
 
   private isPlaying: boolean = false;
+  private loopEnabled: boolean = true;
   private playbackStartTime: number = 0;
   private pausedAtTime: number = 0;
   private songDuration: number = 60;
@@ -30,12 +47,22 @@ export class AudioEngine {
   private eqMid: BiquadFilterNode | null = null;
   private eqHigh: BiquadFilterNode | null = null;
   private compressor: DynamicsCompressorNode | null = null;
+  private limiter: DynamicsCompressorNode | null = null;
   private analyser: AnalyserNode | null = null;
   private reverbNode: ConvolverNode | null = null;
   private reverbGain: GainNode | null = null;
+  private masterVolume = 0.85;
+  private masterEq = { low: 0, mid: 0, high: 0 };
+  private reverbWet = 0.22;
 
   // Stem channel nodes
-  private stemNodes: Record<string, { gain: GainNode; panner: StereoPannerNode }> = {};
+  private stemNodes: Record<string, {
+    gain: GainNode;
+    lowCut: BiquadFilterNode;
+    highCut: BiquadFilterNode;
+    panner: StereoPannerNode;
+    reverbSend: GainNode;
+  }> = {};
 
   // Noise buffers for drums
   private noiseBuffer: AudioBuffer | null = null;
@@ -43,8 +70,9 @@ export class AudioEngine {
   // Timer loop for scheduling notes
   private scheduleInterval: number | null = null;
   private nextBeatToSchedule: number = 0;
-  private lookaheadMs: number = 100;
-  private scheduleAheadSec: number = 0.25;
+  private lookaheadMs: number = 50;
+  private scheduleAheadSec: number = 0.5;
+  private scheduledNoteKeys = new Set<string>();
 
   // Active oscillator cleanup registry
   private activeScheduledNodes: { stop: (time: number) => void }[] = [];
@@ -52,6 +80,7 @@ export class AudioEngine {
   // Listeners
   private onTimeUpdateCallbacks: Set<(currentTime: number) => void> = new Set();
   private onStateChangeCallbacks: Set<(isPlaying: boolean) => void> = new Set();
+  private onSongCompleteCallbacks: Set<(songId: string) => void> = new Set();
 
   private constructor() {}
 
@@ -69,23 +98,23 @@ export class AudioEngine {
 
     // Create Master Chain
     this.masterGain = this.ctx.createGain();
-    this.masterGain.gain.value = 0.85;
+    this.masterGain.gain.value = this.masterVolume;
 
     this.eqLow = this.ctx.createBiquadFilter();
     this.eqLow.type = 'lowshelf';
     this.eqLow.frequency.value = 250;
-    this.eqLow.gain.value = 0;
+    this.eqLow.gain.value = this.masterEq.low;
 
     this.eqMid = this.ctx.createBiquadFilter();
     this.eqMid.type = 'peaking';
     this.eqMid.frequency.value = 1500;
     this.eqMid.Q.value = 1.0;
-    this.eqMid.gain.value = 0;
+    this.eqMid.gain.value = this.masterEq.mid;
 
     this.eqHigh = this.ctx.createBiquadFilter();
     this.eqHigh.type = 'highshelf';
     this.eqHigh.frequency.value = 5000;
-    this.eqHigh.gain.value = 0;
+    this.eqHigh.gain.value = this.masterEq.high;
 
     this.compressor = this.ctx.createDynamicsCompressor();
     this.compressor.threshold.value = -12;
@@ -93,6 +122,13 @@ export class AudioEngine {
     this.compressor.ratio.value = 4;
     this.compressor.attack.value = 0.005;
     this.compressor.release.value = 0.15;
+
+    this.limiter = this.ctx.createDynamicsCompressor();
+    this.limiter.threshold.value = -1.5;
+    this.limiter.knee.value = 0;
+    this.limiter.ratio.value = 20;
+    this.limiter.attack.value = 0.003;
+    this.limiter.release.value = 0.08;
 
     this.analyser = this.ctx.createAnalyser();
     this.analyser.fftSize = 1024;
@@ -102,7 +138,7 @@ export class AudioEngine {
     this.reverbNode = this.ctx.createConvolver();
     this.reverbNode.buffer = this.buildImpulseResponse(this.ctx, 2.2, 2.0);
     this.reverbGain = this.ctx.createGain();
-    this.reverbGain.gain.value = 0.22;
+    this.reverbGain.gain.value = this.reverbWet;
 
     // Master wiring:
     // masterGain -> eqLow -> eqMid -> eqHigh -> compressor -> analyser -> destination
@@ -110,54 +146,18 @@ export class AudioEngine {
     this.eqLow.connect(this.eqMid);
     this.eqMid.connect(this.eqHigh);
     this.eqHigh.connect(this.compressor);
-    this.compressor.connect(this.analyser);
+    this.compressor.connect(this.limiter);
+    this.limiter.connect(this.analyser);
     this.analyser.connect(this.ctx.destination);
 
     // Reverb loop
     this.reverbGain.connect(this.masterGain);
 
-    // Init stem channels for 10-stem architecture (with legacy stem aliases)
-    const stemTypes: (StemType | string)[] = [
-      'lead_vocals',
-      'backing_vocals',
-      'lead_synth',
-      'chords_harmony',
-      'atmosphere_pad',
-      'sub_bass',
-      'mid_bass',
-      'drums_kick_snare',
-      'percussion_cymbals',
-      'fx_transitions',
-      // Legacy aliases
-      'vocals',
-      'lead',
-      'chords',
-      'bass',
-      'drums',
-      'fx',
-    ];
-    for (const stem of stemTypes) {
-      const gain = this.ctx.createGain();
-      gain.gain.value = 0.85;
-
-      const panner = this.ctx.createStereoPanner ? this.ctx.createStereoPanner() : (this.ctx.createGain() as any);
-      gain.connect(panner);
-      panner.connect(this.masterGain);
-
-      // Reverb send for melodic and atmospheric stems
-      if (['lead_vocals', 'backing_vocals', 'lead_synth', 'chords_harmony', 'atmosphere_pad', 'fx_transitions', 'vocals', 'lead', 'chords', 'fx'].includes(stem)) {
-        const sendGain = this.ctx.createGain();
-        sendGain.gain.value = stem.includes('backing') || stem.includes('atmosphere') ? 0.45 : 0.28;
-        gain.connect(sendGain);
-        sendGain.connect(this.reverbNode);
-      }
-
-      this.stemNodes[stem as any] = { gain, panner };
-    }
-
     if (this.reverbNode) {
       this.reverbNode.connect(this.reverbGain);
     }
+
+    this.updateStemRouting();
 
     // Build reusable white noise buffer (2 seconds)
     const bufferSize = this.ctx.sampleRate * 2;
@@ -197,6 +197,33 @@ export class AudioEngine {
     this.updateStemRouting();
   }
 
+  private createStemChannel(stemId: string, stem: StemTrack) {
+    if (!this.ctx || !this.masterGain || !this.reverbNode) return undefined;
+    const gain = this.ctx.createGain();
+    const lowCut = this.ctx.createBiquadFilter();
+    lowCut.type = 'highpass';
+    const highCut = this.ctx.createBiquadFilter();
+    highCut.type = 'lowpass';
+    const panner = this.ctx.createStereoPanner
+      ? this.ctx.createStereoPanner()
+      : (this.ctx.createGain() as unknown as StereoPannerNode);
+    const reverbSend = this.ctx.createGain();
+    const settings = stem.mixSettings ?? defaultStemMixSettings(stemId, stem.name);
+
+    gain.gain.value = stem.volume ?? 0.85;
+    lowCut.frequency.value = settings.lowCutHz;
+    highCut.frequency.value = settings.highCutHz;
+    reverbSend.gain.value = settings.reverbSend;
+    gain.connect(lowCut);
+    lowCut.connect(highCut);
+    highCut.connect(panner);
+    panner.connect(this.masterGain);
+    highCut.connect(reverbSend);
+    reverbSend.connect(this.reverbNode);
+
+    return { gain, lowCut, highCut, panner, reverbSend };
+  }
+
   public updateStemRouting() {
     if (!this.currentSong || !this.ctx) return;
     const anySolo = Object.values(this.currentSong.stems).some((s) => s.solo);
@@ -204,13 +231,10 @@ export class AudioEngine {
     for (const [stemId, stem] of Object.entries(this.currentSong.stems) as [string, any][]) {
       let channel = this.stemNodes[stemId];
       if (!channel && this.ctx && this.masterGain) {
-        const gain = this.ctx.createGain();
-        gain.gain.value = stem.volume ?? 0.85;
-        const panner = this.ctx.createStereoPanner ? this.ctx.createStereoPanner() : (this.ctx.createGain() as any);
-        gain.connect(panner);
-        panner.connect(this.masterGain);
-        channel = { gain, panner };
-        this.stemNodes[stemId] = channel;
+        const createdChannel = this.createStemChannel(stemId, stem);
+        if (!createdChannel) continue;
+        channel = createdChannel;
+        this.stemNodes[stemId] = createdChannel;
       }
       if (!channel) continue;
 
@@ -222,6 +246,10 @@ export class AudioEngine {
       }
 
       channel.gain.gain.setTargetAtTime(effectiveGain, this.ctx.currentTime, 0.02);
+      const settings = stem.mixSettings ?? defaultStemMixSettings(stemId, stem.name);
+      channel.lowCut.frequency.setTargetAtTime(settings.lowCutHz, this.ctx.currentTime, 0.03);
+      channel.highCut.frequency.setTargetAtTime(settings.highCutHz, this.ctx.currentTime, 0.03);
+      channel.reverbSend.gain.setTargetAtTime(settings.reverbSend, this.ctx.currentTime, 0.03);
       if (channel.panner && 'pan' in channel.panner) {
         channel.panner.pan.setTargetAtTime(stem.pan ?? 0, this.ctx.currentTime, 0.02);
       }
@@ -229,11 +257,13 @@ export class AudioEngine {
   }
 
   public setMasterVolume(val: number) {
+    this.masterVolume = Math.max(0, Math.min(1.5, val));
     if (!this.masterGain || !this.ctx) return;
-    this.masterGain.gain.setTargetAtTime(Math.max(0, Math.min(1.5, val)), this.ctx.currentTime, 0.02);
+    this.masterGain.gain.setTargetAtTime(this.masterVolume, this.ctx.currentTime, 0.02);
   }
 
   public setEqualizer(low: number, mid: number, high: number) {
+    this.masterEq = { low, mid, high };
     if (!this.ctx) return;
     if (this.eqLow) this.eqLow.gain.setTargetAtTime(low, this.ctx.currentTime, 0.05);
     if (this.eqMid) this.eqMid.gain.setTargetAtTime(mid, this.ctx.currentTime, 0.05);
@@ -241,8 +271,9 @@ export class AudioEngine {
   }
 
   public setReverbLevel(val: number) {
+    this.reverbWet = Math.max(0, Math.min(1, val));
     if (!this.reverbGain || !this.ctx) return;
-    this.reverbGain.gain.setTargetAtTime(Math.max(0, Math.min(1, val)), this.ctx.currentTime, 0.05);
+    this.reverbGain.gain.setTargetAtTime(this.reverbWet, this.ctx.currentTime, 0.05);
   }
 
   public getAnalyser(): AnalyserNode | null {
@@ -304,9 +335,20 @@ export class AudioEngine {
     if (this.isPlaying) {
       const cur = this.ctx.currentTime - this.playbackStartTime;
       if (cur >= this.songDuration) {
-        // Loop back to start
-        this.seek(0);
-        return 0;
+        if (this.currentSong) {
+          for (const callback of this.onSongCompleteCallbacks) callback(this.currentSong.id);
+        }
+        if (this.loopEnabled) {
+          this.seek(0);
+          return 0;
+        }
+        this.pausedAtTime = this.songDuration;
+        this.stopScheduler();
+        this.killActiveVoices();
+        this.isPlaying = false;
+        this.notifyTimeUpdate(this.songDuration);
+        this.notifyStateChange(false);
+        return this.songDuration;
       }
       return Math.min(cur, this.songDuration);
     }
@@ -317,6 +359,10 @@ export class AudioEngine {
     return this.isPlaying;
   }
 
+  public setLoopEnabled(enabled: boolean) {
+    this.loopEnabled = enabled;
+  }
+
   private startScheduler() {
     this.stopScheduler();
     if (!this.currentSong || !this.ctx) return;
@@ -325,6 +371,8 @@ export class AudioEngine {
     const secPerBeat = 60 / bpm;
     const currentSongTime = this.getCurrentTime();
     this.nextBeatToSchedule = Math.floor(currentSongTime / secPerBeat);
+    this.scheduledNoteKeys.clear();
+    this.scheduleLoop();
 
     this.scheduleInterval = window.setInterval(() => {
       this.scheduleLoop();
@@ -338,6 +386,30 @@ export class AudioEngine {
     }
   }
 
+  private trackActiveVoice(sources: AudioScheduledSourceNode[]) {
+    const voice = {
+      stop: (when = 0) => {
+        for (const source of sources) {
+          try {
+            source.stop(when);
+          } catch (_) {}
+        }
+      },
+    };
+    const remaining = new Set(sources);
+    const removeWhenEnded = (source: AudioScheduledSourceNode) => {
+      remaining.delete(source);
+      if (remaining.size === 0) {
+        this.activeScheduledNodes = this.activeScheduledNodes.filter((active) => active !== voice);
+      }
+    };
+
+    this.activeScheduledNodes.push(voice);
+    for (const source of sources) {
+      source.addEventListener('ended', () => removeWhenEnded(source), { once: true });
+    }
+  }
+
   private scheduleLoop() {
     if (!this.ctx || !this.currentSong || !this.isPlaying) return;
 
@@ -346,19 +418,36 @@ export class AudioEngine {
 
     const bpm = this.currentSong.bpm || 120;
     const secPerBeat = 60 / bpm;
-    const scheduleWindowEnd = currentSongTime + this.scheduleAheadSec;
+    const currentAudioTime = this.ctx.currentTime;
+    const scheduleWindowEnd = currentAudioTime + this.scheduleAheadSec;
 
     // Schedule all notes that fall into [currentSongTime, scheduleWindowEnd]
     const stems = this.currentSong.stems;
+    const anySolo = Object.values(stems).some((stem) => stem?.solo);
     for (const [stemType, stem] of Object.entries(stems) as [StemType, any][]) {
-      if (!stem || !stem.notes) continue;
+      if (!stem || !stem.notes || stem.muted || (anySolo && !stem.solo)) continue;
+      const channel = this.stemNodes[stemType];
+      if (!channel) continue;
 
-      for (const note of stem.notes as NoteEvent[]) {
+      for (const [noteIndex, note] of (stem.notes as NoteEvent[]).entries()) {
         const noteStartTime = note.time * secPerBeat;
-        if (noteStartTime >= currentSongTime && noteStartTime < scheduleWindowEnd) {
-          const audioStartTime = this.playbackStartTime + noteStartTime;
+        const audioStartTime = this.playbackStartTime + noteStartTime;
+        const noteKey = `${stemType}:${noteIndex}`;
+        if (
+          audioStartTime >= currentAudioTime - 0.02 &&
+          audioStartTime < scheduleWindowEnd &&
+          !this.scheduledNoteKeys.has(noteKey)
+        ) {
+          this.scheduledNoteKeys.add(noteKey);
           const noteDurationSec = Math.max(0.05, (note.duration || 0.5) * secPerBeat);
-          this.triggerNoteVoice(stemType, note, audioStartTime, noteDurationSec, this.ctx, this.stemNodes[stemType].gain);
+          this.triggerNoteVoice(
+            stemType,
+            note,
+            Math.max(audioStartTime, currentAudioTime + 0.005),
+            noteDurationSec,
+            this.ctx,
+            channel.gain
+          );
         }
       }
     }
@@ -376,21 +465,22 @@ export class AudioEngine {
     const freq = note.frequency || noteToFreq(note.pitch);
 
     const sType = String(stemType).toLowerCase();
+    const synthPatch = this.currentSong?.stems[stemType]?.synthPatch;
 
     if (sType.startsWith('sub_') || sType === 'sub_bass') {
       this.synthSubBassVoice(ctx, freq, startTime, duration, destinationNode, note.velocity);
     } else if (sType.startsWith('wub_') || sType === 'mid_bass' || sType === 'bass') {
-      this.synthBassVoice(ctx, freq, startTime, duration, destinationNode, note.velocity, note.wobbleRate, note.pitch);
+      this.synthBassVoice(ctx, freq, startTime, duration, destinationNode, note.velocity, note.wobbleRate, note.pitch, synthPatch);
     } else if (sType.startsWith('drum_') || sType === 'drums_kick_snare' || sType === 'drums') {
       this.synthDrumHit(ctx, note.pitch, startTime, destinationNode, note.velocity);
     } else if (sType.startsWith('perc_') || sType === 'percussion_cymbals') {
       this.synthDrumHit(ctx, note.pitch, startTime, destinationNode, note.velocity);
-    } else if (sType.startsWith('lead_') || sType === 'lead_synth' || sType === 'lead') {
-      this.synthLeadVoice(ctx, freq, startTime, duration, destinationNode, note.velocity);
+    } else if (sType === 'lead_synth' || sType === 'lead' || (sType.startsWith('lead_') && sType !== 'lead_vocals')) {
+      this.synthLeadVoice(ctx, freq, startTime, duration, destinationNode, note.velocity, synthPatch);
     } else if (sType.startsWith('chord_') || sType === 'chords_harmony' || sType === 'chords') {
-      this.synthChordVoice(ctx, freq, startTime, duration, destinationNode, note.velocity);
+      this.synthChordVoice(ctx, freq, startTime, duration, destinationNode, note.velocity, synthPatch);
     } else if (sType.startsWith('atmo_') || sType === 'atmosphere_pad') {
-      this.synthAtmosphereVoice(ctx, freq, startTime, duration, destinationNode, note.velocity);
+      this.synthAtmosphereVoice(ctx, freq, startTime, duration, destinationNode, note.velocity, synthPatch);
     } else if (sType.includes('backing') || sType.startsWith('vocal_whisper')) {
       this.synthVocalVoice(ctx, freq, startTime, duration, destinationNode, note.vowel || 'o', (note.velocity || 0.8) * 0.75, true);
     } else if (sType.startsWith('vocal_') || sType === 'lead_vocals' || sType === 'vocals') {
@@ -437,13 +527,7 @@ export class AudioEngine {
     osc.start(time);
     osc.stop(time + duration);
 
-    this.activeScheduledNodes.push({
-      stop: () => {
-        try {
-          osc.stop();
-        } catch (_) {}
-      },
-    });
+    this.trackActiveVoice([osc]);
   }
 
   // Cinematic Atmosphere Drone Pad
@@ -453,45 +537,58 @@ export class AudioEngine {
     time: number,
     duration: number,
     dest: AudioNode,
-    vel: number = 0.7
+    vel: number = 0.7,
+    patch?: SynthPatch
   ) {
     if (freq < 30 || freq > 3500) return;
     const osc1 = ctx.createOscillator();
     const osc2 = ctx.createOscillator();
-    osc1.type = 'sine';
+    osc1.type = patch?.oscillatorType ?? 'sine';
     osc2.type = 'triangle';
     osc1.frequency.setValueAtTime(freq, time);
-    osc2.frequency.setValueAtTime(freq * 1.003, time);
+    osc2.frequency.setValueAtTime(freq * 2 ** ((patch?.detuneCents ?? 5) / 1200), time);
 
     const filter = ctx.createBiquadFilter();
     filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(800, time);
-    filter.frequency.exponentialRampToValueAtTime(1600, time + duration * 0.5);
+    filter.frequency.setValueAtTime(patch?.filterCutoffHz ?? 800, time);
+    filter.frequency.exponentialRampToValueAtTime(Math.min(5000, (patch?.filterCutoffHz ?? 800) * 1.8), time + duration * 0.5);
+
+    const lfo = ctx.createOscillator();
+    lfo.frequency.setValueAtTime(patch?.lfoRateHz ?? 0.35, time);
+    const lfoGain = ctx.createGain();
+    lfoGain.gain.setValueAtTime(Math.min(220, (patch?.filterCutoffHz ?? 800) * 0.12), time);
+    lfo.connect(lfoGain);
+    lfoGain.connect(filter.frequency);
 
     const amp = ctx.createGain();
     amp.gain.setValueAtTime(0, time);
-    amp.gain.linearRampToValueAtTime(0.35 * vel, time + 0.3); // atmospheric slow swell
-    amp.gain.setValueAtTime(0.35 * vel, Math.max(time + 0.3, time + duration - 0.4));
-    amp.gain.exponentialRampToValueAtTime(0.001, time + duration + 0.3);
+    const attack = Math.min(patch?.attackSeconds ?? 0.3, duration * 0.5);
+    const release = Math.min(patch?.releaseSeconds ?? 0.3, duration * 0.8);
+    amp.gain.linearRampToValueAtTime(0.35 * vel, time + attack);
+    amp.gain.setValueAtTime(0.35 * vel, Math.max(time + attack, time + duration - release));
+    amp.gain.exponentialRampToValueAtTime(0.001, time + duration);
 
     osc1.connect(filter);
     osc2.connect(filter);
-    filter.connect(amp);
+    if ((patch?.distortion ?? 0) > 1) {
+      const shaper = ctx.createWaveShaper();
+      shaper.curve = this.makeDistortionCurve(patch!.distortion) as any;
+      shaper.oversample = '2x';
+      filter.connect(shaper);
+      shaper.connect(amp);
+    } else {
+      filter.connect(amp);
+    }
     amp.connect(dest);
 
     osc1.start(time);
     osc2.start(time);
+    lfo.start(time);
     osc1.stop(time + duration + 0.3);
     osc2.stop(time + duration + 0.3);
+    lfo.stop(time + duration + 0.3);
 
-    this.activeScheduledNodes.push({
-      stop: () => {
-        try {
-          osc1.stop();
-          osc2.stop();
-        } catch (_) {}
-      },
-    });
+    this.trackActiveVoice([osc1, osc2, lfo]);
   }
 
   // --- SYNTHESIZERS ---
@@ -509,30 +606,35 @@ export class AudioEngine {
   ) {
     if (freq < 40 || freq > 2000) return;
 
-    // Sawtooth source with slight vibrato (or stereo detuned saw for backing)
+    const vocalStyle = this.currentSong?.vocalStyle.toLowerCase() ?? '';
+    const isBreathy = vocalStyle.includes('breathy') || vocalStyle.includes('ethereal');
+    const isDemon = vocalStyle.includes('demon') || vocalStyle.includes('ominous');
+    const isBaritone = vocalStyle.includes('baritone');
+    const pitchShift = isDemon ? 0.5 : isBaritone ? 0.75 : 1;
     const osc = ctx.createOscillator();
-    osc.type = isBacking ? 'triangle' : 'sawtooth';
-    osc.frequency.setValueAtTime(freq * (isBacking ? 1.004 : 1.0), time);
+    osc.type = isBacking || isBreathy ? 'triangle' : 'sawtooth';
+    osc.frequency.setValueAtTime(freq * pitchShift * (isBacking ? 1.004 : 1.0), time);
 
     // Vibrato LFO
     const lfo = ctx.createOscillator();
-    lfo.frequency.setValueAtTime(isBacking ? 4.8 : 5.5, time);
+    lfo.frequency.setValueAtTime(isBacking ? 4.8 : isBreathy ? 4.2 : vocalStyle.includes('soaring') ? 6.2 : 5.5, time);
     const lfoGain = ctx.createGain();
-    lfoGain.gain.setValueAtTime(isBacking ? 2.0 : 3.5, time);
+    lfoGain.gain.setValueAtTime(isBacking ? 2.0 : isBreathy ? 1.1 : isDemon ? 5.5 : 3.5, time);
     lfo.connect(lfoGain);
     lfoGain.connect(osc.frequency);
 
     // Dual Formant Bandpass Filters (F1 and F2)
     const formants = VOWEL_FORMANTS[vowel] || VOWEL_FORMANTS.a;
+    const formantShift = isBaritone ? 0.8 : isDemon ? 1.12 : 1;
 
     const f1 = ctx.createBiquadFilter();
     f1.type = 'bandpass';
-    f1.frequency.setValueAtTime(formants.f1, time);
+    f1.frequency.setValueAtTime(formants.f1 * formantShift, time);
     f1.Q.setValueAtTime(formants.q1, time);
 
     const f2 = ctx.createBiquadFilter();
     f2.type = 'bandpass';
-    f2.frequency.setValueAtTime(formants.f2, time);
+    f2.frequency.setValueAtTime(formants.f2 * formantShift, time);
     f2.Q.setValueAtTime(formants.q2, time);
 
     const amp = ctx.createGain();
@@ -553,14 +655,7 @@ export class AudioEngine {
     osc.stop(time + duration);
     lfo.stop(time + duration);
 
-    this.activeScheduledNodes.push({
-      stop: () => {
-        try {
-          osc.stop();
-          lfo.stop();
-        } catch (_) {}
-      },
-    });
+    this.trackActiveVoice([osc, lfo]);
   }
 
   // 2. Rich Detuned Saw Lead Synthesizer
@@ -570,51 +665,65 @@ export class AudioEngine {
     time: number,
     duration: number,
     dest: AudioNode,
-    vel: number = 0.8
+    vel: number = 0.8,
+    patch?: SynthPatch
   ) {
     if (freq < 30 || freq > 4000) return;
 
     const osc1 = ctx.createOscillator();
     const osc2 = ctx.createOscillator();
-    osc1.type = 'sawtooth';
-    osc2.type = 'sawtooth';
+    osc1.type = patch?.oscillatorType ?? 'sawtooth';
+    osc2.type = patch?.oscillatorType ?? 'sawtooth';
 
     // Detune by 8 cents for thick chorus effect
     osc1.frequency.setValueAtTime(freq, time);
-    osc2.frequency.setValueAtTime(freq * 1.004, time);
+    osc2.frequency.setValueAtTime(freq * 2 ** ((patch?.detuneCents ?? 7) / 1200), time);
 
     // Resonant Filter Envelope
     const filter = ctx.createBiquadFilter();
     filter.type = 'lowpass';
-    filter.Q.setValueAtTime(4.0, time);
-    filter.frequency.setValueAtTime(freq * 1.5, time);
-    filter.frequency.exponentialRampToValueAtTime(freq * 4.5, time + 0.05);
-    filter.frequency.exponentialRampToValueAtTime(freq * 1.8, time + duration);
+    filter.Q.setValueAtTime(patch?.resonance ?? 4, time);
+    const cutoff = Math.min(12000, Math.max(120, patch?.filterCutoffHz ?? freq * 1.5));
+    filter.frequency.setValueAtTime(cutoff, time);
+    filter.frequency.exponentialRampToValueAtTime(Math.min(16000, Math.max(cutoff, freq * 4.5)), time + 0.05);
+    filter.frequency.exponentialRampToValueAtTime(cutoff, time + duration);
+
+    const lfo = ctx.createOscillator();
+    lfo.frequency.setValueAtTime(patch?.lfoRateHz ?? 4.5, time);
+    const lfoGain = ctx.createGain();
+    lfoGain.gain.setValueAtTime(Math.min(650, cutoff * 0.16), time);
+    lfo.connect(lfoGain);
+    lfoGain.connect(filter.frequency);
 
     const amp = ctx.createGain();
     amp.gain.setValueAtTime(0, time);
-    amp.gain.linearRampToValueAtTime(0.35 * vel, time + 0.02);
-    amp.gain.setValueAtTime(0.35 * vel, Math.max(time + 0.02, time + duration - 0.04));
+    const attack = Math.min(patch?.attackSeconds ?? 0.02, duration * 0.5);
+    const release = Math.min(patch?.releaseSeconds ?? 0.04, duration * 0.8);
+    amp.gain.linearRampToValueAtTime(0.35 * vel, time + attack);
+    amp.gain.setValueAtTime(0.35 * vel, Math.max(time + attack, time + duration - release));
     amp.gain.exponentialRampToValueAtTime(0.001, time + duration);
 
     osc1.connect(filter);
     osc2.connect(filter);
-    filter.connect(amp);
+    if ((patch?.distortion ?? 0) > 1) {
+      const shaper = ctx.createWaveShaper();
+      shaper.curve = this.makeDistortionCurve(patch!.distortion) as any;
+      shaper.oversample = '2x';
+      filter.connect(shaper);
+      shaper.connect(amp);
+    } else {
+      filter.connect(amp);
+    }
     amp.connect(dest);
 
     osc1.start(time);
     osc2.start(time);
+    lfo.start(time);
     osc1.stop(time + duration);
     osc2.stop(time + duration);
+    lfo.stop(time + duration);
 
-    this.activeScheduledNodes.push({
-      stop: () => {
-        try {
-          osc1.stop();
-          osc2.stop();
-        } catch (_) {}
-      },
-    });
+    this.trackActiveVoice([osc1, osc2, lfo]);
   }
 
   // 3. Polyphonic Warm Pad / Chords Synthesizer
@@ -624,39 +733,59 @@ export class AudioEngine {
     time: number,
     duration: number,
     dest: AudioNode,
-    vel: number = 0.7
+    vel: number = 0.7,
+    patch?: SynthPatch
   ) {
     if (freq < 40 || freq > 3000) return;
 
     const osc = ctx.createOscillator();
-    osc.type = 'triangle';
+    const osc2 = ctx.createOscillator();
+    osc.type = patch?.oscillatorType ?? 'triangle';
+    osc2.type = patch?.oscillatorType ?? 'triangle';
     osc.frequency.setValueAtTime(freq, time);
+    osc2.frequency.setValueAtTime(freq * 2 ** ((patch?.detuneCents ?? 3) / 1200), time);
 
     const filter = ctx.createBiquadFilter();
     filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(1400, time);
-    filter.Q.setValueAtTime(1.2, time);
+    filter.frequency.setValueAtTime(patch?.filterCutoffHz ?? 1400, time);
+    filter.Q.setValueAtTime(patch?.resonance ?? 1.2, time);
+
+    const lfo = ctx.createOscillator();
+    lfo.frequency.setValueAtTime(patch?.lfoRateHz ?? 0.35, time);
+    const lfoGain = ctx.createGain();
+    lfoGain.gain.setValueAtTime((patch?.filterCutoffHz ?? 1400) * 0.08, time);
+    lfo.connect(lfoGain);
+    lfoGain.connect(filter.frequency);
 
     const amp = ctx.createGain();
     amp.gain.setValueAtTime(0, time);
-    amp.gain.linearRampToValueAtTime(0.22 * vel, time + 0.08); // warm swell
-    amp.gain.setValueAtTime(0.22 * vel, Math.max(time + 0.08, time + duration - 0.1));
-    amp.gain.exponentialRampToValueAtTime(0.001, time + duration + 0.05);
+    const attack = Math.min(patch?.attackSeconds ?? 0.08, duration * 0.5);
+    const release = Math.min(patch?.releaseSeconds ?? 0.1, duration * 0.8);
+    amp.gain.linearRampToValueAtTime(0.22 * vel, time + attack);
+    amp.gain.setValueAtTime(0.22 * vel, Math.max(time + attack, time + duration - release));
+    amp.gain.exponentialRampToValueAtTime(0.001, time + duration);
 
     osc.connect(filter);
-    filter.connect(amp);
+    osc2.connect(filter);
+    if ((patch?.distortion ?? 0) > 1) {
+      const shaper = ctx.createWaveShaper();
+      shaper.curve = this.makeDistortionCurve(patch!.distortion) as any;
+      shaper.oversample = '2x';
+      filter.connect(shaper);
+      shaper.connect(amp);
+    } else {
+      filter.connect(amp);
+    }
     amp.connect(dest);
 
     osc.start(time);
+    osc2.start(time);
+    lfo.start(time);
     osc.stop(time + duration + 0.05);
+    osc2.stop(time + duration + 0.05);
+    lfo.stop(time + duration + 0.05);
 
-    this.activeScheduledNodes.push({
-      stop: () => {
-        try {
-          osc.stop();
-        } catch (_) {}
-      },
-    });
+    this.trackActiveVoice([osc, osc2, lfo]);
   }
 
   // 4. Dark Deep Rolling Bass & 808 Analog Sub Synthesizer
@@ -668,7 +797,8 @@ export class AudioEngine {
     dest: AudioNode,
     vel: number = 0.9,
     wobbleRate?: number,
-    pitchStr?: string
+    pitchStr?: string,
+    patch?: SynthPatch
   ) {
     if (freq < 20 || freq > 600) return;
 
@@ -687,33 +817,34 @@ export class AudioEngine {
       // 2. Dual Detuned Sawtooth Waves for gritty neuro mid-range
       const saw1 = ctx.createOscillator();
       const saw2 = ctx.createOscillator();
-      saw1.type = 'sawtooth';
-      saw2.type = 'sawtooth';
+      saw1.type = patch?.oscillatorType ?? 'sawtooth';
+      saw2.type = patch?.oscillatorType ?? 'sawtooth';
       saw1.frequency.setValueAtTime(freq, time);
-      saw2.frequency.setValueAtTime(freq * 1.008, time); // detuned by ~14 cents
+      saw2.frequency.setValueAtTime(freq * 2 ** ((patch?.detuneCents ?? 14) / 1200), time);
 
       // 3. Resonant Lowpass Filter with high Q for rolling wobble
       const filter = ctx.createBiquadFilter();
       filter.type = 'lowpass';
-      filter.Q.setValueAtTime(5.8, time);
+      filter.Q.setValueAtTime(patch?.resonance ?? 5.8, time);
 
       // Modulate filter cutoff with LFO for deep rolling effect
-      const lfoRate = wobbleRate || 3.5; // default 3.5Hz (1/8 note at 140 BPM)
+      const lfoRate = wobbleRate || patch?.lfoRateHz || 3.5;
       const lfo = ctx.createOscillator();
       lfo.type = 'triangle';
       lfo.frequency.setValueAtTime(lfoRate, time);
 
       const lfoGain = ctx.createGain();
       // Cutoff sweeps between ~120Hz and 1600Hz
-      lfoGain.gain.setValueAtTime(750, time);
-      filter.frequency.setValueAtTime(950, time);
+      const cutoff = patch?.filterCutoffHz ?? 950;
+      lfoGain.gain.setValueAtTime(cutoff * 0.65, time);
+      filter.frequency.setValueAtTime(cutoff, time);
 
       lfo.connect(lfoGain);
       lfoGain.connect(filter.frequency);
 
       // Distortion / Soft-Clipper Drive
       const waveShaper = ctx.createWaveShaper();
-      waveShaper.curve = this.makeDistortionCurve(18) as any;
+      waveShaper.curve = this.makeDistortionCurve(patch?.distortion ?? 18) as any;
       waveShaper.oversample = '2x';
 
       const sawGain = ctx.createGain();
@@ -729,8 +860,10 @@ export class AudioEngine {
 
       const amp = ctx.createGain();
       amp.gain.setValueAtTime(0, time);
-      amp.gain.linearRampToValueAtTime(0.65 * vel, time + 0.02);
-      amp.gain.setValueAtTime(0.65 * vel, Math.max(time + 0.02, time + duration - 0.04));
+      const attack = Math.min(patch?.attackSeconds ?? 0.02, duration * 0.5);
+      const release = Math.min(patch?.releaseSeconds ?? 0.04, duration * 0.8);
+      amp.gain.linearRampToValueAtTime(0.65 * vel, time + attack);
+      amp.gain.setValueAtTime(0.65 * vel, Math.max(time + attack, time + duration - release));
       amp.gain.exponentialRampToValueAtTime(0.001, time + duration);
 
       waveShaper.connect(amp);
@@ -748,16 +881,7 @@ export class AudioEngine {
       saw2.stop(time + duration);
       lfo.stop(time + duration);
 
-      this.activeScheduledNodes.push({
-        stop: () => {
-          try {
-            subOsc.stop();
-            saw1.stop();
-            saw2.stop();
-            lfo.stop();
-          } catch (_) {}
-        },
-      });
+      this.trackActiveVoice([subOsc, saw1, saw2, lfo]);
       return;
     }
 
@@ -795,14 +919,7 @@ export class AudioEngine {
     osc.stop(time + duration);
     subOsc.stop(time + duration);
 
-    this.activeScheduledNodes.push({
-      stop: () => {
-        try {
-          osc.stop();
-          subOsc.stop();
-        } catch (_) {}
-      },
-    });
+    this.trackActiveVoice([osc, subOsc]);
   }
 
   // Helper: Soft-clipping distortion curve
@@ -1090,13 +1207,53 @@ export class AudioEngine {
 
     const offlineCtx = new OfflineAudioContext(2, totalSamples, sampleRate);
 
-    // Recreate master chain in offline context
+    // Recreate the live master chain in the offline renderer.
     const masterGain = offlineCtx.createGain();
-    masterGain.gain.value = 0.85;
+    masterGain.gain.value = this.masterVolume;
+
+    const eqLow = offlineCtx.createBiquadFilter();
+    eqLow.type = 'lowshelf';
+    eqLow.frequency.value = 250;
+    eqLow.gain.value = this.masterEq.low;
+
+    const eqMid = offlineCtx.createBiquadFilter();
+    eqMid.type = 'peaking';
+    eqMid.frequency.value = 1500;
+    eqMid.Q.value = 1;
+    eqMid.gain.value = this.masterEq.mid;
+
+    const eqHigh = offlineCtx.createBiquadFilter();
+    eqHigh.type = 'highshelf';
+    eqHigh.frequency.value = 5000;
+    eqHigh.gain.value = this.masterEq.high;
 
     const compressor = offlineCtx.createDynamicsCompressor();
-    masterGain.connect(compressor);
-    compressor.connect(offlineCtx.destination);
+    compressor.threshold.value = -12;
+    compressor.knee.value = 18;
+    compressor.ratio.value = 4;
+    compressor.attack.value = 0.005;
+    compressor.release.value = 0.15;
+
+    const limiter = offlineCtx.createDynamicsCompressor();
+    limiter.threshold.value = -1.5;
+    limiter.knee.value = 0;
+    limiter.ratio.value = 20;
+    limiter.attack.value = 0.003;
+    limiter.release.value = 0.08;
+
+    masterGain.connect(eqLow);
+    eqLow.connect(eqMid);
+    eqMid.connect(eqHigh);
+    eqHigh.connect(compressor);
+    compressor.connect(limiter);
+    limiter.connect(offlineCtx.destination);
+
+    const reverbNode = offlineCtx.createConvolver();
+    reverbNode.buffer = this.buildImpulseResponse(offlineCtx, 2.2, 2.0);
+    const reverbGain = offlineCtx.createGain();
+    reverbGain.gain.value = this.reverbWet;
+    reverbNode.connect(reverbGain);
+    reverbGain.connect(masterGain);
 
     // Create noise buffer for offline context
     const offlineNoise = offlineCtx.createBuffer(1, sampleRate * 2, sampleRate);
@@ -1105,31 +1262,58 @@ export class AudioEngine {
       nData[i] = Math.random() * 2 - 1;
     }
     const prevNoise = this.noiseBuffer;
+    const previousSong = this.currentSong;
     this.noiseBuffer = offlineNoise;
+    this.currentSong = song;
 
     const stemsToRender: [StemType, any][] = isolatedStem
       ? [[isolatedStem, song.stems[isolatedStem]]]
       : (Object.entries(song.stems) as [StemType, any][]);
 
-    for (const [stemType, stem] of stemsToRender) {
-      if (!stem || stem.muted || !stem.notes) continue;
+    const anySolo = stemsToRender.some(([, stem]) => Boolean(stem?.solo));
 
-      const stemGain = offlineCtx.createGain();
-      stemGain.gain.value = stem.volume ?? 0.8;
-      stemGain.connect(masterGain);
+    try {
+      for (const [stemType, stem] of stemsToRender) {
+        if (!stem || stem.muted || (anySolo && !stem.solo) || !stem.notes) continue;
 
-      for (const note of stem.notes as NoteEvent[]) {
-        const noteStartTime = note.time * secPerBeat;
-        if (noteStartTime >= totalDuration) continue;
-        const noteDurationSec = Math.max(0.05, (note.duration || 0.5) * secPerBeat);
+        const stemGain = offlineCtx.createGain();
+        stemGain.gain.value = stem.volume ?? 0.8;
+        const settings = stem.mixSettings ?? defaultStemMixSettings(stemType, stem.name);
+        const lowCut = offlineCtx.createBiquadFilter();
+        lowCut.type = 'highpass';
+        lowCut.frequency.value = settings.lowCutHz;
+        const highCut = offlineCtx.createBiquadFilter();
+        highCut.type = 'lowpass';
+        highCut.frequency.value = settings.highCutHz;
+        const panner = offlineCtx.createStereoPanner();
+        panner.pan.value = stem.pan ?? 0;
+        stemGain.connect(lowCut);
+        lowCut.connect(highCut);
+        highCut.connect(panner);
+        panner.connect(masterGain);
 
-        this.triggerNoteVoice(stemType, note, noteStartTime, noteDurationSec, offlineCtx, stemGain);
+        if (settings.reverbSend > 0) {
+          const sendGain = offlineCtx.createGain();
+          sendGain.gain.value = settings.reverbSend;
+          highCut.connect(sendGain);
+          sendGain.connect(reverbNode);
+        }
+
+        for (const note of stem.notes as NoteEvent[]) {
+          const noteStartTime = note.time * secPerBeat;
+          if (noteStartTime >= totalDuration) continue;
+          const noteDurationSec = Math.max(0.05, (note.duration || 0.5) * secPerBeat);
+
+          this.triggerNoteVoice(stemType, note, noteStartTime, noteDurationSec, offlineCtx, stemGain);
+        }
       }
-    }
 
-    const renderedBuffer = await offlineCtx.startRendering();
-    this.noiseBuffer = prevNoise;
-    return audioBufferToWav(renderedBuffer);
+      const renderedBuffer = await offlineCtx.startRendering();
+      return audioBufferToWav(renderedBuffer, isolatedStem ? null : 0.8913);
+    } finally {
+      this.noiseBuffer = prevNoise;
+      this.currentSong = previousSong;
+    }
   }
 
   // --- Live Interactive Audition / Preview for Any of the 100 Stems ---
@@ -1190,6 +1374,11 @@ export class AudioEngine {
   public onStateChange(cb: (p: boolean) => void) {
     this.onStateChangeCallbacks.add(cb);
     return () => this.onStateChangeCallbacks.delete(cb);
+  }
+
+  public onSongComplete(cb: (songId: string) => void) {
+    this.onSongCompleteCallbacks.add(cb);
+    return () => this.onSongCompleteCallbacks.delete(cb);
   }
 
   private notifyTimeUpdate(t: number) {

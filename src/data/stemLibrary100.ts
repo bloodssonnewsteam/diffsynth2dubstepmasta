@@ -172,9 +172,10 @@ export const STEM_LIBRARY_100: StemDefinition[] = [
 export function generate100Stages(
   durationSec: number = 199,
   bpm: number = 140,
-  isDubstep: boolean = true
+  isDubstep: boolean = true,
+  requestedStageCount: number = 100
 ): SongStageBlock[] {
-  const stageCount = 100;
+  const stageCount = Math.max(20, Math.min(100, Math.round(requestedStageCount / 5) * 5));
   const stageDuration = durationSec / stageCount; // ~1.99s per micro-stage
   const stages: SongStageBlock[] = [];
 
@@ -195,6 +196,7 @@ export function generate100Stages(
     const startSec = Math.round((i - 1) * stageDuration * 10) / 10;
     const endSec = Math.round(i * stageDuration * 10) / 10;
     const progress = i / stageCount;
+    const stage = Math.ceil(progress * 100);
 
     let type: SongStageBlock['type'] = 'wub_roll';
     let tension = 50;
@@ -203,31 +205,31 @@ export function generate100Stages(
     let wub = wubTypes[i % wubTypes.length];
 
     // Stage 1 to 14: Intro & Sub Awakening
-    if (i <= 14) {
+    if (stage <= 14) {
       type = i === 1 ? 'sub_dive' : 'transition';
-      tension = Math.round(20 + (i / 14) * 25);
-      name = `Stage ${String(i).padStart(2, '0')}: Sub Drone Awakening [${i}/14]`;
+      tension = Math.round(20 + (stage / 14) * 25);
+      name = `Stage ${String(i).padStart(2, '0')}: Sub Drone Awakening [${stage}/14]`;
       description = 'Subterranean 35Hz rumble with eerie ambient pads';
       wub = '30Hz Sub Bed';
     }
     // Stage 15 to 28: Verse 1 & Rhythm Exposition
-    else if (i <= 28) {
+    else if (stage <= 28) {
       type = 'wub_roll';
-      tension = Math.round(45 + ((i - 14) / 14) * 20);
-      name = `Stage ${String(i).padStart(2, '0')}: Halftime Groove Lock [${i - 14}/14]`;
+      tension = Math.round(45 + ((stage - 14) / 14) * 20);
+      name = `Stage ${String(i).padStart(2, '0')}: Halftime Groove Lock [${stage - 14}/14]`;
       description = '140 BPM kick & ghost rimshots with syncopated sub pulses';
       wub = '1/8 Rolling Sub';
     }
     // Stage 29 to 38: Buildup 1 & Accelerando Snare Tension
-    else if (i <= 38) {
+    else if (stage <= 38) {
       type = 'buildup';
-      tension = Math.round(65 + ((i - 28) / 10) * 32);
-      name = `Stage ${String(i).padStart(2, '0')}: Accelerando Snare Build [${i - 28}/10]`;
+      tension = Math.round(65 + ((stage - 28) / 10) * 32);
+      name = `Stage ${String(i).padStart(2, '0')}: Accelerando Snare Build [${stage - 28}/10]`;
       description = 'Rising pitch sweeps, 16th snare rolls, and escalating tension';
       wub = 'Pitch Riser / Uplift';
     }
     // Stage 39: False Drop / Micro-Cut Silence
-    else if (i === 39) {
+    else if (stage === 39 || (stageCount < 100 && i === Math.round(stageCount * 0.39))) {
       type = 'fakeout';
       tension = 98;
       name = `Stage 39: Pre-Drop Micro-Cut Silence`;
@@ -235,30 +237,32 @@ export function generate100Stages(
       wub = 'Dead Silence Cut';
     }
     // Stage 40 to 60: DROP 1 - Peak 140 Rolling Wub Destruction
-    else if (i <= 60) {
-      type = i === 40 ? 'drop' : i % 5 === 0 ? 'tearout' : 'wub_roll';
-      tension = Math.round(90 + Math.sin((i - 40) * 0.5) * 10);
-      name = `Stage ${String(i).padStart(2, '0')}: Drop I - ${wub} Surge [${i - 39}/21]`;
+    else if (stage <= 60) {
+      type = stage === 40 || (stageCount < 100 && i === Math.round(stageCount * 0.39) + 1)
+        ? 'drop'
+        : stage % 5 === 0 ? 'tearout' : 'wub_roll';
+      tension = Math.round(90 + Math.sin((stage - 40) * 0.5) * 10);
+      name = `Stage ${String(i).padStart(2, '0')}: Drop I - ${wub} Surge [${stage - 39}/21]`;
       description = 'Heavy gunshot snares, 35Hz sub punch, and modulated rolling wubs';
     }
     // Stage 61 to 72: Deep Breakdown & Atmospheric Abyss
-    else if (i <= 72) {
+    else if (stage <= 72) {
       type = 'breakdown';
-      tension = Math.round(40 + Math.sin((i - 60) * 0.4) * 15);
-      name = `Stage ${String(i).padStart(2, '0')}: Abyssal Trench Breakdown [${i - 60}/12]`;
+      tension = Math.round(40 + Math.sin((stage - 60) * 0.4) * 15);
+      name = `Stage ${String(i).padStart(2, '0')}: Abyssal Trench Breakdown [${stage - 60}/12]`;
       description = 'Atmospheric minor drones, vocal chops, and deep sub currents';
       wub = 'Reese Phase Churn';
     }
     // Stage 73 to 82: Buildup 2 - Maximum Intensity Accelerando
-    else if (i <= 82) {
+    else if (stage <= 82) {
       type = 'buildup';
-      tension = Math.round(70 + ((i - 72) / 10) * 29);
-      name = `Stage ${String(i).padStart(2, '0')}: Secondary Shockwave Build [${i - 72}/10]`;
+      tension = Math.round(70 + ((stage - 72) / 10) * 29);
+      name = `Stage ${String(i).padStart(2, '0')}: Secondary Shockwave Build [${stage - 72}/10]`;
       description = '32nd snare bursts, siren alarms, and laser pitch climbing';
       wub = 'Siren Alarm Climb';
     }
     // Stage 83: Pre-Drop 2 Vacuum Cut
-    else if (i === 83) {
+    else if (stage === 83 || (stageCount < 100 && i === Math.round(stageCount * 0.83))) {
       type = 'fakeout';
       tension = 100;
       name = `Stage 83: Pre-Drop 2 Vacuum Drop Breath`;
@@ -266,19 +270,35 @@ export function generate100Stages(
       wub = 'Vacuum Gate Cut';
     }
     // Stage 84 to 96: DROP 2 - Colossal Tearout Wub Overload
-    else if (i <= 96) {
-      type = i === 84 ? 'drop' : 'tearout';
-      tension = Math.round(95 + Math.cos((i - 84) * 0.6) * 5);
-      name = `Stage ${String(i).padStart(2, '0')}: Drop II - ${wub} Tearout [${i - 83}/13]`;
+    else if (stage <= 96) {
+      type = stage <= 84 || (stageCount < 100 && i === Math.round(stageCount * 0.83) + 1) ? 'drop' : 'tearout';
+      tension = Math.round(95 + Math.cos((stage - 84) * 0.6) * 5);
+      name = `Stage ${String(i).padStart(2, '0')}: Drop II - ${wub} Tearout [${stage - 83}/13]`;
       description = 'Maximum 140 dubstep overload with hyper-neuro wub modulation';
     }
     // Stage 97 to 100: Atmospheric Outro & Sub Dissolve
     else {
       type = 'transition';
-      tension = Math.round(30 - ((i - 96) / 4) * 20);
+      tension = Math.round(30 - ((stage - 96) / 4) * 20);
       name = `Stage ${String(i).padStart(2, '0')}: Sub Dissolve into Darkness [${i - 96}/4]`;
       description = 'Sub frequencies dissipating into infinity and tape fadeout';
       wub = '30Hz Sub Fade';
+    }
+
+    if (!isDubstep) {
+      const stageName: Record<SongStageBlock['type'], string> = {
+        sub_dive: 'Opening Texture',
+        transition: 'Transition',
+        wub_roll: 'Main Groove',
+        buildup: 'Energy Build',
+        drop: 'Main Hook',
+        breakdown: 'Breakdown',
+        tearout: 'Instrumental Variation',
+        fakeout: 'Brief Pause',
+      };
+      name = `Stage ${String(i).padStart(2, '0')}: ${stageName[type]}`;
+      description = 'Genre-specific instrumental arrangement movement';
+      wub = type === 'buildup' ? 'Riser and rhythmic lift' : type === 'drop' ? 'Main instrumental hook' : 'Synth texture';
     }
 
     stages.push({
@@ -305,44 +325,51 @@ export function analyzeMusicComprehension(prompt: string, customParams?: any) {
   const p = prompt.toLowerCase();
 
   // Sub-genre detection
-  let extractedGenre = 'Deep Dubstep';
+  let extractedGenre = 'Electronic';
   if (p.includes('riddim')) extractedGenre = 'Riddim Dubstep';
   else if (p.includes('tearout')) extractedGenre = 'Tearout Dubstep';
-  else if (p.includes('neurofunk') || p.includes('dnb')) extractedGenre = 'Neurofunk Drum & Bass';
+  else if (p.includes('neurofunk') || p.includes('dnb') || p.includes('drum and bass')) extractedGenre = 'Neurofunk Drum & Bass';
   else if (p.includes('synthwave') || p.includes('cyberpunk')) extractedGenre = 'Cyberpunk Synthwave';
   else if (p.includes('city pop')) extractedGenre = 'Japanese City Pop';
   else if (p.includes('lo-fi') || p.includes('chillhop')) extractedGenre = 'Lo-Fi Chillhop';
-  else if (p.includes('140') || p.includes('deep sub')) extractedGenre = 'Dark 140 Sub Dubstep';
+  else if (p.includes('future bass')) extractedGenre = 'Future Bass';
+  else if (p.includes('hyperpop')) extractedGenre = 'Hyperpop';
+  else if (p.includes('melodic trap') || p.includes('808 trap')) extractedGenre = 'Melodic Trap';
+  else if (p.includes('house') || p.includes('techno')) extractedGenre = 'House / Techno';
+  else if (p.includes('ambient') || p.includes('soundscape')) extractedGenre = 'Ambient';
+  else if (p.includes('jazz') || p.includes('neo-soul') || p.includes('r&b')) extractedGenre = 'Jazz / Neo-Soul';
+  else if (p.includes('dubstep') || p.includes('deep sub')) extractedGenre = 'Deep Dubstep';
+  if (typeof customParams?.genre === 'string' && customParams.genre.trim()) extractedGenre = customParams.genre;
 
   // BPM Detection
-  let detectedBpm = 140;
   const bpmMatch = p.match(/(\d{2,3})\s*bpm/i);
-  if (bpmMatch) {
-    detectedBpm = parseInt(bpmMatch[1], 10);
-  } else if (extractedGenre.includes('dnb')) {
-    detectedBpm = 174;
-  } else if (extractedGenre.includes('lo-fi')) {
-    detectedBpm = 84;
-  } else if (extractedGenre.includes('city')) {
-    detectedBpm = 116;
-  }
+  const genreLower = extractedGenre.toLowerCase();
+  const inferredBpm = genreLower.includes('drum') || genreLower.includes('dnb') ? 174
+    : genreLower.includes('lo-fi') ? 84
+      : genreLower.includes('city') ? 116
+        : genreLower.includes('ambient') ? 90
+          : genreLower.includes('house') || genreLower.includes('techno') ? 124
+            : genreLower.includes('dubstep') ? 140 : 128;
+  const detectedBpm = Math.max(30, Math.min(240, Number(customParams?.bpm) || (bpmMatch ? Number(bpmMatch[1]) : inferredBpm)));
 
   // Key detection
-  let detectedKey = 'D Minor';
+  let detectedKey = customParams?.key || (genreLower.includes('lo-fi') ? 'Eb Major' : genreLower.includes('city') ? 'A Major' : 'D Minor');
   const keyMatches = ['d minor', 'f minor', 'f# minor', 'a minor', 'c minor', 'g minor', 'a major', 'eb major'];
-  for (const km of keyMatches) {
-    if (p.includes(km)) {
-      detectedKey = km.charAt(0).toUpperCase() + km.slice(1);
-      break;
+  if (!customParams?.key) {
+    for (const km of keyMatches) {
+      if (p.includes(km)) {
+        detectedKey = km.charAt(0).toUpperCase() + km.slice(1);
+        break;
+      }
     }
   }
 
   // Wub & Sub Profile
-  let subBassProfile = '35Hz Subterranean Trench Sine with Warm Tube Saturation';
-  if (p.includes('808')) subBassProfile = 'Pitch-Gliding 808 Sub-Bass with 32Hz Sub Foundation';
-  if (p.includes('clean')) subBassProfile = 'Pure 30Hz Subwoofer Clean Sine (Ultra-Low)';
+  let subBassProfile = genreLower.includes('dubstep') ? '35Hz mono sub foundation' : 'Genre-balanced low-frequency foundation';
+  if (p.includes('808')) subBassProfile = 'Pitch-gliding 808 sub foundation';
+  if (p.includes('clean')) subBassProfile = 'Clean sine sub with controlled harmonics';
 
-  let wubArchitecture = '1/8 Rolling Wubs + 1/16 Neuro Churn & Formant Yoi Growls';
+  let wubArchitecture = customParams?.wubSpeed || 'Prompt-shaped synth modulation';
   if (p.includes('tearout')) wubArchitecture = 'Aggressive Multi-Detuned Tearout Saw with Hard-Clipping';
   if (p.includes('triplet')) wubArchitecture = 'Polymetric 1/8-Triplet Bounce with Squelch Growls';
 
@@ -352,7 +379,7 @@ export function analyzeMusicComprehension(prompt: string, customParams?: any) {
     detectedKey,
     subBassProfile,
     wubArchitecture,
-    buildDropCount: 100, // 100 melded stages
+    buildDropCount: Math.max(20, Math.min(100, Number(customParams?.buildDropCount) || 100)),
     lyricTheme: p.slice(0, 120),
     energyVarianceScore: customParams?.variance !== undefined ? Math.round(customParams.variance * 100) : 85,
   };

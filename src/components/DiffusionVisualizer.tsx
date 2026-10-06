@@ -1,5 +1,5 @@
 /**
- * DiffRhythm 2 - Real-Time Audio Visualizer & Latent Diffusion Spectrogram
+ * DiffRhythm - Procedural composition progress and real-time audio visualizer
  */
 
 import React, { useEffect, useRef, useState } from 'react';
@@ -10,12 +10,14 @@ interface DiffusionVisualizerProps {
   isPlaying: boolean;
   isGenerating: boolean;
   diffusionStepProgress: number;
+  generationStatus: string;
 }
 
 export const DiffusionVisualizer: React.FC<DiffusionVisualizerProps> = ({
   isPlaying,
   isGenerating,
   diffusionStepProgress,
+  generationStatus,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [visualMode, setVisualMode] = useState<'fft' | 'oscilloscope' | 'spectrogram'>('fft');
@@ -42,8 +44,7 @@ export const DiffusionVisualizer: React.FC<DiffusionVisualizerProps> = ({
       ctx.fillRect(0, 0, width, height);
 
       if (isGenerating) {
-        // Render Latent Diffusion Denoising Simulation
-        // As stepProgress increases, noise transitions to harmonic bands
+        // Render an abstract progress visualization, not a live spectrogram.
         const noiseFactor = Math.max(0, 1 - diffusionStepProgress / 100);
         const harmonicFactor = diffusionStepProgress / 100;
 
@@ -69,7 +70,7 @@ export const DiffusionVisualizer: React.FC<DiffusionVisualizerProps> = ({
         ctx.fillStyle = 'rgba(6, 182, 212, 0.8)';
         ctx.font = '10px monospace';
         ctx.fillText(
-          `DIFFRHYTHM-2 LATENT DENOISING: STEP ${Math.round(diffusionStepProgress)}%`,
+          `${generationStatus.toUpperCase()} · ${Math.round(diffusionStepProgress)}%`,
           12,
           18
         );
@@ -146,7 +147,7 @@ export const DiffusionVisualizer: React.FC<DiffusionVisualizerProps> = ({
     return () => {
       cancelAnimationFrame(animId);
     };
-  }, [isPlaying, isGenerating, diffusionStepProgress, visualMode]);
+  }, [isPlaying, isGenerating, diffusionStepProgress, generationStatus, visualMode]);
 
   return (
     <div className="relative w-full h-24 bg-zinc-950 border border-zinc-800/90 rounded-2xl overflow-hidden shadow-inner">

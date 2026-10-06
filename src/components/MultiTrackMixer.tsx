@@ -33,12 +33,14 @@ import { UNDERGROUND_DUBSTEP_STYLES, UndergroundDubstepStyle } from '../data/und
 interface MultiTrackMixerProps {
   song: Song;
   onUpdateStem: (stemType: StemType | string, updates: any) => void;
+  onApplySong: (song: Song) => void;
   isPlaying: boolean;
 }
 
 export const MultiTrackMixer: React.FC<MultiTrackMixerProps> = ({
   song,
   onUpdateStem,
+  onApplySong,
   isPlaying,
 }) => {
   // Mixer Mode: 'standard_console' (10-channel strip) vs 'matrix_100_soundboard' (full 100-stem matrix)
@@ -199,27 +201,23 @@ export const MultiTrackMixer: React.FC<MultiTrackMixerProps> = ({
     }
   };
 
-  // Run AI Auto-Mix on entire song
+  // Apply a deterministic mix profile to the current arrangement.
   const handleRunAutoMix = () => {
     setIsAutoMixing(true);
-    setTimeout(() => {
-      try {
-        const res = autoMixer.autoMixSong(song, selectedAutoMixStyle);
-        setAutoMixResult(res);
-        for (const d of res.stemDecisions) {
-          onUpdateStem(d.stemId, { volume: d.newVolume, pan: d.newPan });
-        }
-        setEqLow(res.masterEq.lowDb);
-        setEqMid(res.masterEq.midDb);
-        setEqHigh(res.masterEq.highDb);
-        setReverbLevel(res.reverbWetPercent / 100);
-        setShowAutoMixReport(true);
-      } catch (e) {
-        console.error('Auto mix error:', e);
-      } finally {
-        setIsAutoMixing(false);
-      }
-    }, 450);
+    try {
+      const res = autoMixer.autoMixSong(song, selectedAutoMixStyle);
+      onApplySong(res.updatedSong);
+      setAutoMixResult(res);
+      setEqLow(res.masterEq.lowDb);
+      setEqMid(res.masterEq.midDb);
+      setEqHigh(res.masterEq.highDb);
+      setReverbLevel(res.reverbWetPercent / 100);
+      setShowAutoMixReport(true);
+    } catch (e) {
+      console.error('Auto mix error:', e);
+    } finally {
+      setIsAutoMixing(false);
+    }
   };
 
   return (
@@ -274,7 +272,7 @@ export const MultiTrackMixer: React.FC<MultiTrackMixerProps> = ({
           </div>
         </div>
 
-        {/* AI AUTO-MIX INTELLIGENCE CONTROL RACK (As explicitly requested by user) */}
+        {/* Profile-based auto-mix controls */}
         <div className="p-4 bg-gradient-to-r from-cyan-950/30 via-zinc-950 to-purple-950/30 border border-cyan-500/40 rounded-xl space-y-3">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
             <div className="flex items-center gap-2.5">
@@ -284,14 +282,14 @@ export const MultiTrackMixer: React.FC<MultiTrackMixerProps> = ({
               <div>
                 <div className="flex items-center gap-2">
                   <h4 className="text-xs font-bold text-white uppercase tracking-wider font-mono">
-                    AI Auto-Mix Engine & Underground Sound System Intelligence
+                    Automatic Mix Profiles
                   </h4>
                   <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-500/30">
-                    Self-Learning Active
+                    Profile Based
                   </span>
                 </div>
                 <p className="text-[11px] text-zinc-400 font-mono">
-                  Automatically balances all stems, anchors mono 30-50Hz sub-bass, clears mid mud, and sets master EQ
+                  Applies stem gain and pan with the profile EQ and reverb. Song ratings influence future generated mixes.
                 </p>
               </div>
             </div>
@@ -317,7 +315,7 @@ export const MultiTrackMixer: React.FC<MultiTrackMixerProps> = ({
                 className="flex items-center gap-1.5 px-4 py-1.5 bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-400 hover:to-blue-400 text-black font-bold rounded-xl text-xs font-mono transition-all shadow-md shadow-cyan-500/20 cursor-pointer disabled:opacity-50"
               >
                 <Sparkles size={13} className={isAutoMixing ? 'animate-spin' : ''} />
-                <span>{isAutoMixing ? 'Auto-Mixing Stems...' : 'Run AI Auto-Mix'}</span>
+                <span>{isAutoMixing ? 'Balancing Stems...' : 'Apply Mix Profile'}</span>
               </button>
             </div>
           </div>
@@ -452,8 +450,16 @@ export const MultiTrackMixer: React.FC<MultiTrackMixerProps> = ({
                       <h4 className="text-[11px] font-bold text-white truncate font-mono" title={stem.name}>
                         {stem.name}
                       </h4>
-                      <p className="text-[9px] text-zinc-400 truncate mb-2" title={stem.instrument}>
+                      <p
+                        className="text-[9px] text-zinc-400 truncate mb-2"
+                        title={stem.synthPatch
+                          ? `${stem.instrument} · ${stem.synthPatch.oscillatorType}, ${Math.round(stem.synthPatch.filterCutoffHz)}Hz filter, ${stem.synthPatch.lfoRateHz.toFixed(1)}Hz LFO`
+                          : stem.instrument}
+                      >
                         {stem.instrument}
+                        {stem.synthPatch && (
+                          <span className="text-cyan-300"> · {stem.synthPatch.oscillatorType} / {Math.round(stem.synthPatch.filterCutoffHz)}Hz</span>
+                        )}
                       </p>
 
                       {/* Solo & Mute Buttons */}

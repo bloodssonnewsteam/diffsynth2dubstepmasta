@@ -37,7 +37,7 @@ export function noteToFreq(noteStr: string): number {
 }
 
 // Convert audio buffer to a standard 16-bit PCM WAV Blob
-export function audioBufferToWav(buffer: AudioBuffer): Blob {
+export function audioBufferToWav(buffer: AudioBuffer, targetPeak: number | null = 0.8913): Blob {
   const numChannels = buffer.numberOfChannels;
   const sampleRate = buffer.sampleRate;
   const format = 1; // PCM
@@ -87,14 +87,22 @@ export function audioBufferToWav(buffer: AudioBuffer): Blob {
 
   // Interleave and write samples
   const channels: Float32Array[] = [];
+  let peak = 0;
   for (let i = 0; i < numChannels; i++) {
-    channels.push(buffer.getChannelData(i));
+    const channelData = buffer.getChannelData(i);
+    channels.push(channelData);
+    if (targetPeak !== null) {
+      for (let sampleIndex = 0; sampleIndex < numSamples; sampleIndex++) {
+        peak = Math.max(peak, Math.abs(channelData[sampleIndex]));
+      }
+    }
   }
+  const outputGain = targetPeak !== null && peak > targetPeak ? targetPeak / peak : 1;
 
   let offset = 44;
   for (let i = 0; i < numSamples; i++) {
     for (let channel = 0; channel < numChannels; channel++) {
-      let sample = channels[channel][i];
+      let sample = channels[channel][i] * outputGain;
       // Clamp between -1.0 and 1.0
       sample = Math.max(-1, Math.min(1, sample));
       // Convert to 16-bit PCM integer

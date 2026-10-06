@@ -454,12 +454,9 @@ function createAbyssalDubstepSong(): Song {
       acousticness: 0.05,
       spaceReverb: 0.7,
     },
-    diffusionMeta: {
-      steps: 60,
-      cfgScale: 5.5,
-      sampler: 'DPM++ 2M SDE',
+    synthesisMeta: {
       seed: 948210,
-      model: 'DiffRhythm-2-DiT-Audio-Large',
+      model: 'Curated Web Audio preset',
       generatedAt: '2026-10-05T13:45:00Z',
       compositionMethod: '3-part-multi-movement',
     },
@@ -969,12 +966,9 @@ const NEON_OVERDRIVE_3MIN = extendSongToLongFormat({
     acousticness: 0.08,
     spaceReverb: 0.65,
   },
-  diffusionMeta: {
-    steps: 50,
-    cfgScale: 4.5,
-    sampler: 'Euler-A',
+  synthesisMeta: {
     seed: 849201,
-    model: 'DiffRhythm-2-DiT-Audio-Large',
+    model: 'Curated Web Audio preset',
     generatedAt: '2026-10-05T12:00:00Z',
   },
   chordsProgression: [
@@ -1155,12 +1149,9 @@ const TOKYO_MIDNIGHT_3MIN = extendSongToLongFormat({
     acousticness: 0.35,
     spaceReverb: 0.5,
   },
-  diffusionMeta: {
-    steps: 45,
-    cfgScale: 4.2,
-    sampler: 'DPM++ 2M SDE',
+  synthesisMeta: {
     seed: 712390,
-    model: 'DiffRhythm-2-DiT-Audio-Large',
+    model: 'Curated Web Audio preset',
     generatedAt: '2026-10-05T12:00:00Z',
   },
   chordsProgression: [

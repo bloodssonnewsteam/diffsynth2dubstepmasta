@@ -1,12 +1,12 @@
 /**
- * DiffRhythm 2 - Evolutionary Self-Learning Neural Engine
- * Tracks generation cycles, continuously expands English prompt comprehension vocabulary,
- * optimizes acoustic sub-bass weights, and refines the 7-step mastered song creation pipeline.
+ * DiffRhythm 2 - Local preference memory for prompt vocabulary, mix profiles, and synth patches.
  */
 
-import { Song, SongGenerationParams } from '../types/music';
+import { MusicReference, Song, SongGenerationParams, SynthPatch, SynthPatchFamily } from '../types/music';
+import { UNDERGROUND_DUBSTEP_STYLES } from '../data/undergroundDubstepResearch';
 
 export interface GenerationMemoryRecord {
+  songId: string;
   generationNumber: number;
   timestamp: string;
   songTitle: string;
@@ -16,9 +16,21 @@ export interface GenerationMemoryRecord {
   detectedKey: string;
   detectedBpm: number;
   subBassProfile: string;
+  mixProfileId?: string;
+  synthPatches: Partial<Record<SynthPatchFamily, SynthPatch>>;
+  recentMotif: string[];
+  feedback?: 'like' | 'dislike';
+  listeningRatio?: number;
+  modelReward?: number;
+  modelContext?: string;
   learnedTokens: string[];
-  comprehensionScore: number; // 0 to 100
-  qualityScore: number; // 0 to 100
+}
+
+export interface MixProfilePosterior {
+  alpha: number;
+  beta: number;
+  exposures: number;
+  outcomes: number;
 }
 
 export interface EvolvedPipelineStep {
@@ -33,37 +45,18 @@ export interface EvolutionaryState {
   currentGeneration: number;
   totalCharactersParsed: number;
   vocabularySize: number;
-  comprehensionAccuracyPercent: number;
   learnedSubBassProfilesCount: number;
-  soundSystemMasteryLevel: string; // e.g. "Level 9: Sound System Sorcerer"
+  soundSystemMasteryLevel: string;
   learnedKeywords: string[];
+  references: MusicReference[];
+  mixModel: Record<string, Record<string, MixProfilePosterior>>;
   history: GenerationMemoryRecord[];
   evolvedPipelineSteps: EvolvedPipelineStep[];
 }
 
-const STORAGE_KEY = 'diffrhythm2_evolutionary_neural_memory_v1';
-
-const INITIAL_KEYWORDS = [
-  'sub pressure',
-  '35hz trench',
-  'deep dark dangerous',
-  '140 bpm half-time',
-  'gunshot snare',
-  'neuro churn',
-  '1/8 rolling wub',
-  'dmz sound system',
-  'mala dubplate',
-  'coki wobble',
-  'loefah 40hz thud',
-  'trench minimal flow',
-  'tearout saw',
-  'formant yoi growl',
-  'micro-gate silence cut',
-  'cavernous dub delay',
-  'shepard pitch riser',
-  '100 melded stages',
-  'mono sub anchor',
-];
+const STORAGE_KEY = 'diffrhythm2_preference_memory_v3';
+const LEGACY_STORAGE_KEY = 'diffrhythm2_preference_memory_v2';
+const STOP_WORDS = new Set(['about', 'after', 'again', 'also', 'been', 'could', 'from', 'have', 'into', 'just', 'more', 'some', 'than', 'that', 'their', 'them', 'then', 'there', 'these', 'they', 'this', 'very', 'with', 'your']);
 
 export class EvolutionaryLearningEngine {
   private static instance: EvolutionaryLearningEngine | null = null;
@@ -82,98 +75,86 @@ export class EvolutionaryLearningEngine {
 
   private loadState(): EvolutionaryState {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY);
+      const saved = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY);
       if (saved) {
-        return JSON.parse(saved);
+        const state = JSON.parse(saved) as EvolutionaryState;
+        return {
+          ...state,
+          references: state.references ?? [],
+          mixModel: state.mixModel ?? {},
+          evolvedPipelineSteps: (state.evolvedPipelineSteps ?? []).map((step) =>
+            step.stepNumber === 6
+              ? { ...step, title: 'Local Preference Memory', description: 'Stores prompt tokens, generated motifs, passive listening outcomes, and optional ratings in this browser.', efficiencyGain: 'Automatic local updates' }
+              : step.stepNumber === 7
+                ? { ...step, title: 'Contextual Mix and Synth Learner', description: 'A genre/tempo contextual Beta bandit updates from listening and ratings, then balances expected reward with exploration.', efficiencyGain: 'Persistent posterior model' }
+                : step
+          ),
+          history: (state.history ?? []).map((record) => ({
+            ...record,
+            recentMotif: record.recentMotif ?? [],
+          })),
+        };
       }
     } catch (_) {}
 
     return {
-      currentGeneration: 7, // Initial baseline generation with underground research
-      totalCharactersParsed: 48920,
-      vocabularySize: INITIAL_KEYWORDS.length,
-      comprehensionAccuracyPercent: 94.8,
-      learnedSubBassProfilesCount: 16,
-      soundSystemMasteryLevel: 'Level 7: Abyssal Trench Specialist',
-      learnedKeywords: [...INITIAL_KEYWORDS],
-      history: [
-        {
-          generationNumber: 5,
-          timestamp: '2026-10-05T12:00:00Z',
-          songTitle: 'Deep Trench Subduction',
-          promptSnippet: 'Dark deep rolling bass dubstep with 35Hz sub-bass...',
-          promptCharLength: 280,
-          detectedGenre: 'Deep Dubstep',
-          detectedKey: 'D Minor',
-          detectedBpm: 140,
-          subBassProfile: '35Hz Sub Trench',
-          learnedTokens: ['35hz trench', 'sub pressure', 'gunshot snare'],
-          comprehensionScore: 92.5,
-          qualityScore: 95.0,
-        },
-        {
-          generationNumber: 6,
-          timestamp: '2026-10-05T13:30:00Z',
-          songTitle: 'Abyssal 100-Stage Matrix',
-          promptSnippet: '100 buildups and drops melded together masterfully...',
-          promptCharLength: 420,
-          detectedGenre: 'Dark 140 Sub Dubstep',
-          detectedKey: 'D Minor',
-          detectedBpm: 140,
-          subBassProfile: '35Hz Sub Sine (Mono)',
-          learnedTokens: ['100 melded stages', 'false drop silence', 'rolling neuro wub'],
-          comprehensionScore: 96.0,
-          qualityScore: 98.2,
-        },
-      ],
+      currentGeneration: 0,
+      totalCharactersParsed: 0,
+      vocabularySize: 0,
+      learnedSubBassProfilesCount: 0,
+      soundSystemMasteryLevel: 'Waiting for generation feedback',
+      learnedKeywords: [],
+      references: [],
+      mixModel: {},
+      history: [],
       evolvedPipelineSteps: [
         {
           stepNumber: 1,
-          title: 'Deep English Semantic & Lore Extraction',
-          description: 'High-payload neural parsing of prompts up to 30,000 characters for subterranean lore and mood cues',
-          efficiencyGain: '+38% contextual comprehension',
-          status: 'optimized',
+          title: 'Prompt and Genre Analysis',
+          description: 'Combines the prompt with explicit genre, tempo, key, and sound-design controls.',
+          efficiencyGain: 'Rule-based + optional Gemini',
+          status: 'active',
         },
         {
           stepNumber: 2,
-          title: 'Underground Sound System DNA Blueprint',
-          description: 'Identifies style (DDD, Trench, Tearout, UK DMZ, Leftfield) and locks sub fundamental (30-45Hz)',
-          efficiencyGain: '+42% low-end precision',
-          status: 'optimized',
+          title: 'Procedural Arrangement',
+          description: 'Builds timed sections, transitions, notes, and a tempo-aligned stage map.',
+          efficiencyGain: '100 timed stages',
+          status: 'active',
         },
         {
           stepNumber: 3,
-          title: '100-Stage Melded Micro-Composition',
-          description: 'Sequences 100 micro-stages with escalating tension curves, fakeout silence cuts, and wub mutations',
-          efficiencyGain: '+55% movement variance',
-          status: 'optimized',
+          title: 'Procedural Stem Synthesis',
+          description: 'Renders the generated note events through the browser Web Audio synthesizers.',
+          efficiencyGain: '10 primary tracks',
+          status: 'active',
         },
         {
           stepNumber: 4,
-          title: '100-Stem Studio Matrix Allocation',
-          description: 'Assigns active stems across 10 sound design families with real-time Web Audio voice synthesis',
-          efficiencyGain: '+60% sound depth',
-          status: 'optimized',
+          title: 'Adaptive Auto-Mix',
+          description: 'Applies a style profile to stem levels, pan, equalization, and reverb.',
+          efficiencyGain: 'Profile-based',
+          status: 'active',
         },
         {
           stepNumber: 5,
-          title: 'AI Auto-Mixing & Sound System Balancing',
-          description: 'Anchors mono sub-bass, clears mid mud above 110Hz, slots stereo field, and tunes master EQ',
-          efficiencyGain: '+48% clarity & punch',
-          status: 'optimized',
+          title: 'Peak-Safe Master Render',
+          description: 'Uses bus compression, a safety limiter, matching offline processing, and peak control on full-song WAVs.',
+          efficiencyGain: '-1 dBFS sample peak target',
+          status: 'active',
         },
         {
           stepNumber: 6,
-          title: 'Diffusion Latent Melding & DiT Audio Synthesis',
-          description: 'High-step diffusion with CFG guidance and harmonic overtone saturation',
-          efficiencyGain: '+35% acoustic warmth',
+          title: 'Local Preference Memory',
+          description: 'Stores prompt tokens, generated motifs, passive listening outcomes, and optional ratings in this browser.',
+          efficiencyGain: 'Automatic local updates',
           status: 'active',
         },
         {
           stepNumber: 7,
-          title: 'Evolutionary Memory Feedback Loop',
-          description: 'Extracts newly discovered tokens, updates neural vocabulary, and evolves acoustic tuning for the next song',
-          efficiencyGain: 'Self-improving every song',
+          title: 'Contextual Mix and Synth Learner',
+          description: 'A genre/tempo contextual Beta bandit updates from listening and ratings, then balances expected reward with exploration.',
+          efficiencyGain: 'Persistent posterior model',
           status: 'evolving',
         },
       ],
@@ -186,44 +167,48 @@ export class EvolutionaryLearningEngine {
     } catch (_) {}
   }
 
-  /**
-   * Called automatically every time a song is generated
-   * Feeds the song DNA into the evolutionary model to grow intelligence!
-   */
+  private getMixContext(genre: string, bpm: number): string {
+    const genreKey = genre.toLowerCase().trim().replace(/[^a-z0-9]+/g, '_');
+    const tempoKey = bpm < 100 ? 'slow' : bpm < 140 ? 'mid' : 'fast';
+    return `${genreKey}:${tempoKey}`;
+  }
+
+  private getOrCreatePosterior(context: string, profileId: string): MixProfilePosterior {
+    const profiles = this.state.mixModel[context] ??= {};
+    return profiles[profileId] ??= { alpha: 1, beta: 1, exposures: 0, outcomes: 0 };
+  }
+
+  private applyModelOutcome(record: GenerationMemoryRecord, reward: number) {
+    if (!record.mixProfileId) return;
+    const context = record.modelContext || this.getMixContext(record.detectedGenre, record.detectedBpm);
+    const posterior = this.getOrCreatePosterior(context, record.mixProfileId);
+    if (record.modelReward !== undefined) {
+      posterior.alpha = Math.max(1, posterior.alpha - record.modelReward);
+      posterior.beta = Math.max(1, posterior.beta - (1 - record.modelReward));
+    } else {
+      posterior.outcomes += 1;
+    }
+    const boundedReward = Math.max(0, Math.min(1, reward));
+    posterior.alpha += boundedReward;
+    posterior.beta += 1 - boundedReward;
+    record.modelReward = boundedReward;
+    record.modelContext = context;
+  }
+
+  /** Store generation context, motif novelty, and the applied mix-profile exposure. */
   public recordSongGeneration(song: Song, params?: SongGenerationParams): EvolutionaryState {
     const nextGen = this.state.currentGeneration + 1;
-    const promptText = song.prompt || params?.prompt || '';
+    const promptText = params?.prompt || song.prompt || '';
     const promptLen = promptText.length;
-
-    // Extract new vocabulary tokens from user prompt
-    const pLower = promptText.toLowerCase();
-    const words = pLower.match(/\b[a-z0-9_-]{3,20}\b/g) || [];
-    const candidates = [
-      'sub', 'wub', 'bass', 'drop', 'buildup', 'trench', 'tearout', 'reese',
-      'halftime', 'snare', 'kick', 'sound system', 'dubplate', 'delay', '140',
-      'deep', 'dark', 'abyssal', 'saturation', 'neuro', 'wobble', 'rumble',
-      'frequency', 'vacuum', 'silence', 'impact', 'chest', 'sine'
-    ];
-
-    const newlyLearned: string[] = [];
-    for (const c of candidates) {
-      if (pLower.includes(c) && !this.state.learnedKeywords.includes(c)) {
-        this.state.learnedKeywords.push(c);
-        newlyLearned.push(c);
-      }
-    }
-
-    // Calculate updated comprehension score
-    const newComprehension = Math.min(99.9, Math.round((95 + Math.log2(nextGen) * 1.1) * 10) / 10);
-
-    // Compute Sound System Mastery Level
-    let mastery = 'Level 7: Abyssal Trench Specialist';
-    if (nextGen >= 20) mastery = 'Level 12: Apex Sound System Overlord';
-    else if (nextGen >= 15) mastery = 'Level 10: Grandmaster Sound System Architect';
-    else if (nextGen >= 10) mastery = 'Level 9: Deep Dubplate Sorcerer';
-    else if (nextGen >= 8) mastery = 'Level 8: 140 Subterranean Virtuoso';
+    const words = [...new Set(promptText.toLowerCase().match(/\b[a-z0-9_-]{4,20}\b/g) || [])]
+      .filter((word) => !STOP_WORDS.has(word));
+    const knownWords = new Set(this.state.learnedKeywords);
+    const newlyLearned = words.filter((word) => !knownWords.has(word));
+    this.state.learnedKeywords = [...this.state.learnedKeywords, ...newlyLearned].slice(-200);
+    const modelContext = this.getMixContext(song.genre, song.bpm);
 
     const memoryRecord: GenerationMemoryRecord = {
+      songId: song.id,
       generationNumber: nextGen,
       timestamp: new Date().toISOString(),
       songTitle: song.title,
@@ -232,24 +217,169 @@ export class EvolutionaryLearningEngine {
       detectedGenre: song.genre,
       detectedKey: song.key,
       detectedBpm: song.bpm,
-      subBassProfile: song.comprehension?.subBassProfile || '35Hz Subterranean Trench Sine',
-      learnedTokens: newlyLearned.length > 0 ? newlyLearned : ['140 sound system alignment', 'sub-bass mono lock'],
-      comprehensionScore: newComprehension,
-      qualityScore: Math.min(99.8, Math.round((96.5 + Math.random() * 3.2) * 10) / 10),
+      subBassProfile: song.comprehension?.subBassProfile || 'Not detected',
+      mixProfileId: song.mixProfileId,
+      modelContext,
+      synthPatches: this.collectSynthPatches(song),
+      recentMotif: song.motifSignature?.slice(0, 8)
+        || (song.stems.lead_synth?.notes || []).slice(0, 8).map((note) => note.pitch),
+      learnedTokens: newlyLearned,
     };
 
     this.state.currentGeneration = nextGen;
     this.state.totalCharactersParsed += promptLen;
     this.state.vocabularySize = this.state.learnedKeywords.length;
-    this.state.comprehensionAccuracyPercent = newComprehension;
-    this.state.soundSystemMasteryLevel = mastery;
+    this.state.learnedSubBassProfilesCount = new Set(
+      [memoryRecord, ...this.state.history]
+        .map((record) => record.subBassProfile)
+        .filter((profile) => profile !== 'Not detected')
+    ).size;
     this.state.history.unshift(memoryRecord);
+    if (memoryRecord.mixProfileId) {
+      this.getOrCreatePosterior(modelContext, memoryRecord.mixProfileId).exposures += 1;
+    }
     if (this.state.history.length > 25) {
       this.state.history.pop();
     }
+    this.updateMemorySummary();
 
     this.saveState();
     return this.state;
+  }
+
+  public recordSongFeedback(songId: string, feedback: 'like' | 'dislike'): boolean {
+    const record = this.state.history.find((item) => item.songId === songId);
+    if (!record) return false;
+    record.feedback = feedback;
+    this.applyModelOutcome(record, feedback === 'like' ? 1 : 0);
+    this.updateMemorySummary();
+    this.saveState();
+    return true;
+  }
+
+  public recordSongEngagement(songId: string, listeningRatio: number): void {
+    const record = this.state.history.find((item) => item.songId === songId);
+    if (!record) return;
+    const ratio = Math.max(0, Math.min(1, listeningRatio));
+    if (ratio <= (record.listeningRatio ?? 0)) return;
+    record.listeningRatio = ratio;
+    if (!record.feedback) this.applyModelOutcome(record, ratio);
+    this.saveState();
+  }
+
+  public getPreferredMixStyle(genre: string, bpm: number = 140): string | undefined {
+    const context = this.getMixContext(genre, bpm);
+    const profiles = this.state.mixModel[context];
+    if (!profiles || !Object.values(profiles).some((profile) => profile.outcomes > 0)) return undefined;
+    const totalExposures = Math.max(1, Object.values(profiles).reduce((sum, profile) => sum + profile.exposures, 0));
+
+    return UNDERGROUND_DUBSTEP_STYLES
+      .map((style) => {
+        const posterior = profiles[style.id] ?? { alpha: 1, beta: 1, exposures: 0, outcomes: 0 };
+        const mean = posterior.alpha / (posterior.alpha + posterior.beta);
+        const exploration = 0.25 * Math.sqrt(Math.log(totalExposures + 1) / (posterior.exposures + 1));
+        return { id: style.id, score: mean + exploration };
+      })
+      .sort((left, right) => right.score - left.score)[0]?.id;
+  }
+
+  public getPreferredSynthPatch(genre: string, family: SynthPatchFamily, bpm: number = 140): SynthPatch | undefined {
+    const context = this.getMixContext(genre, bpm);
+    const samples = this.state.history
+      .filter((record) => record.detectedGenre.toLowerCase() === genre.toLowerCase()
+        && (record.modelContext || this.getMixContext(record.detectedGenre, record.detectedBpm)) === context
+        && record.feedback !== 'dislike'
+        && (record.feedback === 'like' || (record.modelReward ?? 0) >= 0.7))
+      .map((record) => record.synthPatches?.[family])
+      .filter((patch): patch is SynthPatch => Boolean(patch));
+    if (samples.length === 0) return undefined;
+
+    const waves = new Map<OscillatorType, number>();
+    for (const patch of samples) {
+      waves.set(patch.oscillatorType, (waves.get(patch.oscillatorType) ?? 0) + 1);
+    }
+    const oscillatorType = [...waves.entries()].sort(([, left], [, right]) => right - left)[0][0];
+    const average = (key: keyof Omit<SynthPatch, 'oscillatorType'>) =>
+      samples.reduce((total, patch) => total + patch[key], 0) / samples.length;
+
+    return {
+      oscillatorType,
+      detuneCents: average('detuneCents'),
+      filterCutoffHz: average('filterCutoffHz'),
+      resonance: average('resonance'),
+      attackSeconds: average('attackSeconds'),
+      releaseSeconds: average('releaseSeconds'),
+      lfoRateHz: average('lfoRateHz'),
+      distortion: average('distortion'),
+    };
+  }
+
+  public addMusicReference(reference: MusicReference): void {
+    this.state.references = [
+      reference,
+      ...this.state.references.filter((item) => item.videoId !== reference.videoId),
+    ].slice(0, 12);
+    this.saveState();
+  }
+
+  public removeMusicReference(videoId: string): void {
+    this.state.references = this.state.references.filter((item) => item.videoId !== videoId);
+    this.saveState();
+  }
+
+  public getMusicReferences(): MusicReference[] {
+    return [...this.state.references];
+  }
+
+  public getReferenceNotes(): string {
+    return this.state.references
+      .slice(0, 3)
+      .filter((reference) => reference.influence > 0)
+      .map((reference) => `Influence ${Math.round(reference.influence * 100)}%: ${reference.styleNotes}`)
+      .join('\n');
+  }
+
+  public updateMusicReferenceInfluence(videoId: string, influence: number): void {
+    this.state.references = this.state.references.map((reference) =>
+      reference.videoId === videoId
+        ? { ...reference, influence: Math.max(0, Math.min(1, influence)) }
+        : reference
+    );
+    this.saveState();
+  }
+
+  public getRecentMotifs(genre: string): string[][] {
+    const normalizedGenre = genre.trim().toLowerCase();
+    return this.state.history
+      .filter((record) => !normalizedGenre || record.detectedGenre.toLowerCase() === normalizedGenre)
+      .slice(0, 8)
+      .map((record) => record.recentMotif)
+      .filter((motif) => motif?.length > 0);
+  }
+
+  private collectSynthPatches(song: Song): Partial<Record<SynthPatchFamily, SynthPatch>> {
+    const patches: Partial<Record<SynthPatchFamily, SynthPatch>> = {};
+    for (const [stemId, stem] of Object.entries(song.stems)) {
+      if (!stem.synthPatch) continue;
+      const lowerId = stemId.toLowerCase();
+      const family: SynthPatchFamily | undefined =
+        lowerId === 'mid_bass' || lowerId === 'bass' || lowerId.startsWith('wub_')
+          ? 'bass'
+          : lowerId === 'lead_synth' || lowerId === 'lead' || (lowerId.startsWith('lead_') && lowerId !== 'lead_vocals')
+            ? 'lead'
+            : lowerId === 'chords_harmony' || lowerId === 'chords' || lowerId.startsWith('chord_') || lowerId === 'atmosphere_pad' || lowerId.startsWith('atmo_')
+              ? 'pad'
+              : undefined;
+      if (family && !patches[family]) patches[family] = stem.synthPatch;
+    }
+    return patches;
+  }
+
+  private updateMemorySummary() {
+    const ratedCount = this.state.history.filter((record) => record.feedback).length;
+    this.state.soundSystemMasteryLevel = ratedCount
+      ? `${ratedCount} rated songs in local memory`
+      : 'Waiting for generation feedback';
   }
 
   public getState(): EvolutionaryState {

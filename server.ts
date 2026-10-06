@@ -9,6 +9,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
 import { generate100Stages, analyzeMusicComprehension, STEM_LIBRARY_100 } from './src/data/stemLibrary100';
+import type { LyricLine, SongSectionType } from './src/types/music';
 
 dotenv.config();
 
@@ -20,6 +21,67 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 // High payload limit for massive English prompt briefs (25,000+ characters)
 app.use(express.json({ limit: '50mb' }));
+
+const CHROMATIC_NOTES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const NOTE_OFFSETS: Record<string, number> = {
+  C: 0, 'C#': 1, Db: 1, D: 2, 'D#': 3, Eb: 3, E: 4, F: 5,
+  'F#': 6, Gb: 6, G: 7, 'G#': 8, Ab: 8, A: 9, 'A#': 10, Bb: 10, B: 11,
+};
+
+function pitchToMidi(pitch: string): number {
+  const match = pitch.match(/^([A-G](?:#|b)?)(-?\d+)$/i);
+  if (!match) return 60;
+  const name = match[1][0].toUpperCase() + match[1].slice(1);
+  return (Number(match[2]) + 1) * 12 + (NOTE_OFFSETS[name] ?? 0);
+}
+
+function midiToPitch(midi: number): string {
+  const rounded = Math.round(midi);
+  return `${CHROMATIC_NOTES[((rounded % 12) + 12) % 12]}${Math.floor(rounded / 12) - 1}`;
+}
+
+function getKeyRoot(key: string): string {
+  return key.match(/^([A-G](?:#|b)?)/i)?.[1] ?? 'D';
+}
+
+function getScaleIntervals(key: string): number[] {
+  return key.toLowerCase().includes('major')
+    ? [0, 2, 4, 5, 7, 9, 11]
+    : [0, 2, 3, 5, 7, 8, 10];
+}
+
+function scalePitch(key: string, degree: number, octave: number): string {
+  const root = getKeyRoot(key);
+  const intervals = getScaleIntervals(key);
+  const normalizedDegree = ((degree % 7) + 7) % 7;
+  const octaveOffset = Math.floor(degree / 7);
+  const rootMidi = pitchToMidi(`${root}4`);
+  return midiToPitch(rootMidi + intervals[normalizedDegree] + (octaveOffset + octave - 4) * 12);
+}
+
+function buildChordCycle(key: string, withSevenths = false) {
+  const intervals = getScaleIntervals(key);
+  const degrees = key.toLowerCase().includes('major') ? [0, 4, 5, 3] : [0, 5, 3, 6];
+  return degrees.map((degree) => {
+    const rootMidi = pitchToMidi(scalePitch(key, degree, 3));
+    const thirdMidi = pitchToMidi(scalePitch(key, degree + 2, 3));
+    const fifthMidi = pitchToMidi(scalePitch(key, degree + 4, 3));
+    const seventhMidi = pitchToMidi(scalePitch(key, degree + 6, 3));
+    const thirdDistance = thirdMidi - rootMidi;
+    const fifthDistance = fifthMidi - rootMidi;
+    const seventhDistance = seventhMidi - rootMidi;
+    const suffix = thirdDistance === 3 && fifthDistance === 6
+      ? withSevenths ? 'm7b5' : 'dim'
+      : thirdDistance === 3 ? withSevenths ? seventhDistance === 10 ? 'm7' : 'm' : 'm'
+        : withSevenths ? seventhDistance === 11 ? 'maj7' : '7' : '';
+    const rootName = CHROMATIC_NOTES[((rootMidi % 12) + 12) % 12];
+    return {
+      name: `${rootName}${suffix}`,
+      notes: [midiToPitch(rootMidi), midiToPitch(thirdMidi), midiToPitch(fifthMidi), ...(withSevenths ? [midiToPitch(seventhMidi)] : [])],
+      root: rootName,
+    };
+  });
+}
 
 // Initialize Gemini Client
 const ai = new GoogleGenAI({
@@ -46,7 +108,10 @@ function generate100StageSong(
   customLyrics?: string,
   durationSec: number = 199,
   variance: number = 0.85,
-  wubSpeed?: string
+  wubSpeed?: string,
+  buildDropDensity: number = 100,
+  selectedStems: string[] = [],
+  recentMotifs: string[][] = []
 ) {
   const pLower = prompt.toLowerCase();
   const isDubstep =
@@ -55,20 +120,84 @@ function generate100StageSong(
     pLower.includes('deep bass') ||
     pLower.includes('wobble') ||
     pLower.includes('wub') ||
-    pLower.includes('140') ||
     pLower.includes('sub bass') ||
     pLower.includes('tearout') ||
     genre?.toLowerCase().includes('dubstep');
 
-  const isDnb = pLower.includes('dnb') || pLower.includes('drum and bass') || pLower.includes('neurofunk');
+  const isDnb = pLower.includes('dnb') || pLower.includes('drum and bass') || pLower.includes('neurofunk') || genre?.toLowerCase().includes('dnb') || genre?.toLowerCase().includes('drum & bass');
   const isLofi = pLower.includes('lo-fi') || pLower.includes('chillhop') || genre?.toLowerCase().includes('lo-fi');
   const isCityPop = pLower.includes('city pop') || pLower.includes('japan') || genre?.toLowerCase().includes('city');
+  const isAmbient = /ambient|soundscape|drone|no drums|without drums/.test(pLower) || genre?.toLowerCase().includes('ambient');
+  const isTrap = /\btrap\b|808|hi-hat roll|hihat roll/.test(pLower) || genre?.toLowerCase().includes('trap');
+  const isHouse = /\bhouse\b|four.on.the.floor|four on the floor|tech house|\btechno\b/.test(pLower) || /house|techno/i.test(genre || '');
+  const isBreakbeat = /breakbeat|broken beat|two.step|two step|uk garage|garage/.test(pLower);
+  const isJazz = /jazz|neo.soul|neo soul|swing|jazzy|r&b/.test(pLower) || /jazz|neo.?soul|r&b/i.test(genre || '');
+  const isFutureBass = /future bass|supersaw|chopped vocal/.test(pLower) || genre?.toLowerCase().includes('future bass');
+  const isHyperpop = /hyperpop|glitch pop|glitchy pop/.test(pLower) || genre?.toLowerCase().includes('hyperpop');
+  const isBright = /uplifting|bright|joyful|euphoric|hopeful|sunny/.test(pLower);
+  const isDark = /dark|ominous|menacing|brooding|eerie/.test(pLower);
+  const isMinimal = /minimal|sparse|stripped.back|few layers/.test(pLower);
+  const isDense = /dense|busy|maximal|layered|wall of sound/.test(pLower);
+  const promptBpmMatch = pLower.match(/\b(\d{2,3})\s*(?:bpm|beats per minute)\b/);
+  const promptBpm = promptBpmMatch ? Number(promptBpmMatch[1]) : undefined;
+  const promptKeyMatch = pLower.match(/\b([a-g](?:#|b)?)\s+(major|minor)\b/i);
+  const promptKey = promptKeyMatch
+    ? `${promptKeyMatch[1][0].toUpperCase()}${promptKeyMatch[1].slice(1)} ${promptKeyMatch[2][0].toUpperCase()}${promptKeyMatch[2].slice(1)}`
+    : undefined;
+  const isInstrumental = /instrumental|no vocals|without vocals|no vocal/.test(pLower) && !customLyrics?.trim();
 
-  const chosenBpm = bpm || (isDubstep ? 140 : isDnb ? 174 : isLofi ? 84 : isCityPop ? 116 : 128);
-  const chosenKey = key || (isDubstep ? 'D Minor' : isDnb ? 'F Minor' : isLofi ? 'Eb Major' : isCityPop ? 'A Major' : 'F# Minor');
-  const chosenGenre = genre || (isDubstep ? 'Deep Dubstep' : isDnb ? 'Neurofunk DnB' : isLofi ? 'Lo-Fi Chillhop' : isCityPop ? 'City Pop' : 'Cyberpunk Synthwave');
-  const chosenMood = mood || (isDubstep ? 'Dark, Ominous & Deep Rolling Subwoofer' : 'Futuristic & Cinematic');
-  const chosenVocal = vocalStyle || (isDubstep ? 'Dark Cyber Chant & Sub Vocoder' : 'Soaring Cyber-Pop Female');
+  const defaultBpm = isDubstep ? 140 : isDnb ? 174 : isLofi ? 84 : isCityPop ? 116 : isHouse ? 124 : isTrap ? 140 : isFutureBass || isHyperpop ? 150 : isAmbient ? 90 : 128;
+  const chosenBpm = Math.round(Math.max(30, Math.min(240, Number(bpm) || promptBpm || defaultBpm)));
+  const chosenKey = key || promptKey || (isDubstep ? 'D Minor' : isDnb ? 'F Minor' : isLofi || isJazz ? 'Eb Major' : isCityPop ? 'A Major' : 'F# Minor');
+  const chosenGenre = genre || (isDubstep ? 'Deep Dubstep' : isDnb ? 'Neurofunk DnB' : isLofi ? 'Lo-Fi Chillhop' : isCityPop ? 'City Pop' : isHouse ? 'House' : isTrap ? 'Melodic Trap' : isFutureBass ? 'Future Bass' : isHyperpop ? 'Hyperpop' : isAmbient ? 'Ambient' : isJazz ? 'Jazz / Neo-Soul' : 'Electronic');
+  const chosenMood = mood || (isBright ? 'Bright and uplifting' : isDark ? 'Dark and atmospheric' : isAmbient ? 'Calm and spacious' : isLofi ? 'Warm and relaxed' : 'Energetic and melodic');
+  const chosenVocal = vocalStyle || (isInstrumental ? 'Instrumental'
+    : /baritone|male voice|male vocal/.test(pLower) ? 'Warm Baritone Male'
+      : /rap|rapper|autotune/.test(pLower) ? 'Melodic Autotuned Rap'
+        : /breathy|indie soul|neo.soul/.test(pLower) ? 'Breathy Indie Soul'
+          : /female|woman|girl/.test(pLower) ? 'Soaring Cyber-Pop Female'
+            : isDubstep ? 'Dark Cyber Chant & Sub Vocoder'
+              : isCityPop ? 'Warm Breezy City Pop'
+                : isAmbient ? 'Ethereal Ambient Chorus' : 'Soaring Cyber-Pop Female');
+  const compositionSeed = Math.floor(Math.random() * 999999);
+  let randomState = compositionSeed || 1;
+  const random = () => {
+    randomState = (Math.imul(randomState, 1664525) + 1013904223) >>> 0;
+    return randomState / 0x100000000;
+  };
+  const normalizedVariance = Math.max(0, Math.min(1, variance));
+  const promptDirectedMotif = /ascending|rising melody|climb/.test(pLower)
+    ? 'ascending'
+    : /descending|falling melody|descent/.test(pLower)
+      ? 'descending'
+      : /arpeggio|arp/.test(pLower)
+        ? 'arpeggio'
+        : undefined;
+  const melodicMotif: number[] = [];
+  for (let index = 0; index < 16; index++) {
+    const previous = index > 0 ? melodicMotif[index - 1] : Math.floor(random() * 7);
+    const promptDegree = promptDirectedMotif === 'ascending'
+      ? (previous + 1 + Math.floor(random() * 2)) % 7
+      : promptDirectedMotif === 'descending'
+        ? (previous + 6 - Math.floor(random() * 2)) % 7
+        : promptDirectedMotif === 'arpeggio'
+          ? [0, 2, 4, 6][index % 4]
+          : undefined;
+    melodicMotif.push(promptDegree ?? (random() < normalizedVariance ? Math.floor(random() * 7) : previous));
+  }
+  const motifMatchesHistory = () => recentMotifs.some((knownMotif) =>
+    knownMotif.length >= 8 && knownMotif.slice(0, 8).join('|') === melodicMotif.slice(0, 8)
+      .map((degree) => scalePitch(chosenKey, degree, 5))
+      .join('|')
+  );
+  for (let attempt = 0; attempt < 20 && motifMatchesHistory(); attempt++) {
+    const index = Math.floor(random() * melodicMotif.length);
+    melodicMotif[index] = Math.floor(random() * 7);
+  }
+  const requestedDensity = Math.max(0.2, Math.min(1, Number(buildDropDensity) / 100 || 1));
+  const promptDensityBias = isAmbient ? 0.28 : isMinimal ? 0.65 : isDense ? 1.18 : 1;
+  const arrangementDensity = Math.max(0.12, Math.min(1, requestedDensity * promptDensityBias));
+  const selectedStemIds = new Set(selectedStems);
 
   // Guarantee at least 180 seconds (3 full minutes!)
   const finalDuration = Math.max(180, Number(durationSec) || 199);
@@ -108,7 +237,36 @@ function generate100StageSong(
   ];
 
   // 100 Melded Micro-Stages & Tension Blueprint
-  const stages = generate100Stages(finalDuration, chosenBpm, isDubstep);
+  const stages = generate100Stages(finalDuration, chosenBpm, isDubstep, buildDropDensity);
+  const isMajor = chosenKey.toLowerCase().includes('major');
+  const progressionOptions = isMajor
+    ? [[0, 4, 5, 3], [0, 3, 4, 0], [5, 3, 0, 4], [0, 5, 1, 4]]
+    : [[0, 5, 3, 6], [0, 3, 6, 2], [0, 6, 3, 4], [0, 4, 1, 6]];
+  const progressions = progressionOptions[Math.floor(random() * progressionOptions.length)];
+  const layoutJitter = random() * 0.06 - 0.03;
+  const sectionLayout = isAmbient
+    ? {
+        introEnd: 0.22,
+        buildOneStart: 0.42,
+        buildOneEnd: 0.46,
+        dropOneEnd: 0.68,
+        breakdownEnd: 0.88,
+        buildTwoStart: 0.78,
+        buildTwoEnd: 0.82,
+        dropTwoEnd: 0.94,
+        outroStart: 0.94,
+      }
+    : {
+        introEnd: 0.09 + random() * 0.05,
+        buildOneStart: 0.27 + layoutJitter,
+        buildOneEnd: 0.34 + layoutJitter,
+        dropOneEnd: 0.52 + layoutJitter,
+        breakdownEnd: 0.67 + layoutJitter,
+        buildTwoStart: 0.69 + layoutJitter,
+        buildTwoEnd: 0.76 + layoutJitter,
+        dropTwoEnd: 0.92 + layoutJitter,
+        outroStart: 0.92 + layoutJitter,
+      };
 
   // Deep Prompt Comprehension Metadata
   const comprehension = analyzeMusicComprehension(prompt, {
@@ -116,6 +274,8 @@ function generate100StageSong(
     bpm: chosenBpm,
     key: chosenKey,
     genre: chosenGenre,
+    wubSpeed,
+    buildDropCount: buildDropDensity,
   });
 
   // 3-Part Lyrics Narrative spanning full 3+ minutes
@@ -287,6 +447,49 @@ function generate100StageSong(
         },
       ];
 
+  const customLyricRows: { text: string; section: SongSectionType }[] = [];
+  let currentLyricSection: SongSectionType = 'Verse 1';
+  const lyricSections: SongSectionType[] = [
+    'Intro', 'Verse 1', 'Pre-Chorus', 'Chorus', 'Build-up', 'Drop 1',
+    'Breakdown', 'Verse 2', 'Build-up 2', 'Drop 2', 'Bridge', 'Outro',
+  ];
+  for (const rawLine of (customLyrics || '').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const headingMatch = line.match(/^\[([^\]]+)\]\s*(.*)$/);
+    if (headingMatch) {
+      const heading = headingMatch[1].toLowerCase();
+      currentLyricSection = lyricSections.find((section) => section.toLowerCase() === heading)
+        || (heading.includes('verse') && heading.includes('2') ? 'Verse 2' : undefined)
+        || (heading.includes('verse') ? 'Verse 1' : undefined)
+        || (heading.includes('drop') && heading.includes('2') ? 'Drop 2' : undefined)
+        || (heading.includes('drop') ? 'Drop 1' : undefined)
+        || (heading.includes('build') && heading.includes('2') ? 'Build-up 2' : undefined)
+        || (heading.includes('build') ? 'Build-up' : undefined)
+        || currentLyricSection;
+      if (headingMatch[2].trim()) customLyricRows.push({ text: headingMatch[2].trim(), section: currentLyricSection });
+      continue;
+    }
+    customLyricRows.push({ text: line, section: currentLyricSection });
+  }
+  const generatedLyrics: LyricLine[] = isInstrumental
+    ? []
+    : customLyricRows.length
+      ? customLyricRows.slice(0, 36).map((line, index, rows) => {
+        const startTime = Math.round((index / rows.length) * finalDuration);
+        const endTime = Math.min(finalDuration, Math.round(((index + 1) / rows.length) * finalDuration));
+        return {
+          id: `custom-lyric-${index + 1}`,
+          section: line.section,
+          startTime,
+          endTime: Math.max(startTime + 1, endTime),
+          text: line.text,
+          partIndex: (startTime < part1EndSec ? 1 : startTime < part2EndSec ? 2 : 3) as 1 | 2 | 3,
+          words: [],
+        };
+        })
+      : lyrics;
+
   // Core Stem Buffers
   const leadVocalsNotes: any[] = [];
   const backingVocalsNotes: any[] = [];
@@ -301,19 +504,7 @@ function generate100StageSong(
 
   // Chord Progression Definitions
   const chordsProgression: any[] = [];
-  const chordCycle = isDubstep
-    ? [
-        { name: 'Dm', notes: ['D3', 'F3', 'A3'], root: 'D' },
-        { name: 'Bb', notes: ['Bb2', 'D3', 'F3'], root: 'Bb' },
-        { name: 'Gm', notes: ['G2', 'Bb2', 'D3'], root: 'G' },
-        { name: 'A', notes: ['A2', 'C#3', 'E3'], root: 'A' },
-      ]
-    : [
-        { name: 'F#m', notes: ['F#3', 'A3', 'C#4'], root: 'F#' },
-        { name: 'D', notes: ['D3', 'F#3', 'A3'], root: 'D' },
-        { name: 'A', notes: ['A3', 'C#4', 'E4'], root: 'A' },
-        { name: 'E', notes: ['E3', 'G#3', 'B3'], root: 'E' },
-      ];
+  const chordCycle = buildChordCycle(chosenKey, isJazz);
 
   // Build Chords across all bars
   for (let bar = 0; bar < totalBars; bar += 4) {
@@ -321,8 +512,8 @@ function generate100StageSong(
     const b = bar * 4;
     chordsProgression.push({ bar: bar + 1, time: b * secPerBeat, chord: c.name, notes: c.notes });
     c.notes.forEach((pitch) => {
-      chordsHarmonyNotes.push({ time: b, duration: 3.8, pitch, velocity: 0.65 });
-      atmospherePadNotes.push({ time: b, duration: 4.0, pitch, velocity: 0.45 });
+      chordsHarmonyNotes.push({ time: b, duration: 15.8, pitch, velocity: 0.65 });
+      atmospherePadNotes.push({ time: b, duration: 16.0, pitch, velocity: 0.45 });
     });
   }
 
@@ -337,43 +528,30 @@ function generate100StageSong(
     const isPart3 = barSec >= part2EndSec;
 
     // Specific section states
-    const isBuild = (bar >= 28 && bar < 36) || (bar >= 78 && bar < 86);
-    const isDrop = (bar >= 36 && bar < 56) || (bar >= 86 && bar < 108);
-    const isBreakdown = bar >= 56 && bar < 70;
-    const isIntro = bar < 14;
-    const isOutro = bar >= totalBars - 8;
+    const songProgress = bar / totalBars;
+    const isBuild = !isAmbient && (
+      (songProgress >= sectionLayout.buildOneStart && songProgress < sectionLayout.buildOneEnd)
+      || (songProgress >= sectionLayout.buildTwoStart && songProgress < sectionLayout.buildTwoEnd)
+    );
+    const isDrop = !isAmbient && (
+      (songProgress >= sectionLayout.buildOneEnd && songProgress < sectionLayout.dropOneEnd)
+      || (songProgress >= sectionLayout.buildTwoEnd && songProgress < sectionLayout.dropTwoEnd)
+    );
+    const isBreakdown = isAmbient
+      ? songProgress >= sectionLayout.introEnd && songProgress < sectionLayout.outroStart
+      : songProgress >= sectionLayout.dropOneEnd && songProgress < sectionLayout.breakdownEnd;
+    const isIntro = songProgress < sectionLayout.introEnd;
+    const isOutro = songProgress >= sectionLayout.outroStart;
 
     // Root Note for Bass
-    const rootSub = isDubstep
-      ? bar % 4 === 1
-        ? 'Bb0'
-        : bar % 4 === 2
-        ? 'G0'
-        : bar % 4 === 3
-        ? 'A0'
-        : 'D1'
-      : bar % 4 === 1
-      ? 'D1'
-      : bar % 4 === 2
-      ? 'A1'
-      : 'F#1';
-
-    const rootMid = isDubstep
-      ? bar % 4 === 1
-        ? 'F1'
-        : bar % 4 === 2
-        ? 'G1'
-        : bar % 4 === 3
-        ? 'C#2'
-        : 'D1'
-      : bar % 4 === 1
-      ? 'D2'
-      : bar % 4 === 2
-      ? 'A2'
-      : 'F#2';
+    const progressionDegree = progressions[Math.floor(bar / 4) % 4];
+    const rootSub = scalePitch(chosenKey, progressionDegree, 1);
+    const rootMid = scalePitch(chosenKey, progressionDegree, 2);
 
     // 1. DRUMS (Kick & Snare) + PERCUSSION (Hats, Cymbals, Claps)
-    if (isIntro) {
+    if (isAmbient) {
+      if (bar % 8 === 0) percussionCymbalsNotes.push({ time: b, duration: 0.1, pitch: 'hihat_closed', velocity: 0.12 });
+    } else if (isIntro) {
       if (bar >= 6 && bar % 2 === 0) {
         drumsKickSnareNotes.push({ time: b + 0, duration: 0.2, pitch: isDubstep ? 'dubstep_kick' : 'kick', velocity: 0.7 });
       }
@@ -410,6 +588,68 @@ function generate100StageSong(
         percussionCymbalsNotes.push({ time: b + 2.5, duration: 0.1, pitch: 'hihat_closed', velocity: 0.8 });
         percussionCymbalsNotes.push({ time: b + 3.0, duration: 0.1, pitch: 'hihat_open', velocity: 0.9 });
         percussionCymbalsNotes.push({ time: b + 3.5, duration: 0.1, pitch: 'hihat_closed', velocity: 0.85 });
+      } else if (isDnb) {
+        drumsKickSnareNotes.push({ time: b, duration: 0.2, pitch: 'kick', velocity: 1.0 });
+        drumsKickSnareNotes.push({ time: b + 2, duration: 0.2, pitch: 'snare', velocity: 0.95 });
+        drumsKickSnareNotes.push({ time: b + 2.75, duration: 0.15, pitch: 'kick', velocity: 0.75 });
+        for (let step = 0.5; step < 4; step += 0.5) {
+          percussionCymbalsNotes.push({ time: b + step, duration: 0.1, pitch: 'hihat_closed', velocity: step % 1 === 0 ? 0.68 : 0.42 });
+        }
+      } else if (isLofi) {
+        drumsKickSnareNotes.push({ time: b, duration: 0.25, pitch: 'kick', velocity: 0.78 });
+        drumsKickSnareNotes.push({ time: b + 2, duration: 0.25, pitch: 'snare', velocity: 0.62 });
+        percussionCymbalsNotes.push({ time: b + 1.5, duration: 0.1, pitch: 'hihat_closed', velocity: 0.38 });
+        percussionCymbalsNotes.push({ time: b + 3.5, duration: 0.1, pitch: 'hihat_open', velocity: 0.32 });
+      } else if (isTrap) {
+        drumsKickSnareNotes.push({ time: b, duration: 0.25, pitch: 'kick', velocity: 0.9 });
+        drumsKickSnareNotes.push({ time: b + 2, duration: 0.2, pitch: 'snare', velocity: 0.78 });
+        drumsKickSnareNotes.push({ time: b + 2.75, duration: 0.2, pitch: 'kick', velocity: 0.7 });
+        for (let step = 0.5; step < 4; step += 0.5) {
+          percussionCymbalsNotes.push({ time: b + step, duration: 0.08, pitch: 'hihat_closed', velocity: step % 1 === 0 ? 0.55 : 0.38 });
+        }
+        if (bar % 4 === 3) {
+          for (let step = 3; step < 4; step += 0.25) {
+            percussionCymbalsNotes.push({ time: b + step, duration: 0.06, pitch: 'hihat_closed', velocity: 0.42 });
+          }
+        }
+      } else if (isHouse) {
+        for (let beat = 0; beat < 4; beat++) {
+          drumsKickSnareNotes.push({ time: b + beat, duration: 0.25, pitch: 'kick', velocity: beat === 0 ? 0.92 : 0.76 });
+        }
+        drumsKickSnareNotes.push({ time: b + 1, duration: 0.15, pitch: 'clap', velocity: 0.72 });
+        drumsKickSnareNotes.push({ time: b + 3, duration: 0.15, pitch: 'clap', velocity: 0.72 });
+        for (let beat = 0.5; beat < 4; beat += 1) {
+          percussionCymbalsNotes.push({ time: b + beat, duration: 0.08, pitch: 'hihat_closed', velocity: 0.48 });
+        }
+      } else if (isCityPop) {
+        drumsKickSnareNotes.push({ time: b, duration: 0.25, pitch: 'kick', velocity: 0.82 });
+        drumsKickSnareNotes.push({ time: b + 2, duration: 0.25, pitch: 'kick', velocity: 0.72 });
+        drumsKickSnareNotes.push({ time: b + 1, duration: 0.18, pitch: 'snare', velocity: 0.68 });
+        drumsKickSnareNotes.push({ time: b + 3, duration: 0.18, pitch: 'clap', velocity: 0.62 });
+        for (const beat of [0.5, 1.5, 2.5, 3.5]) {
+          percussionCymbalsNotes.push({ time: b + beat, duration: 0.08, pitch: 'hihat_closed', velocity: 0.42 });
+        }
+      } else if (isFutureBass) {
+        drumsKickSnareNotes.push({ time: b, duration: 0.25, pitch: 'kick', velocity: 0.9 });
+        drumsKickSnareNotes.push({ time: b + 2, duration: 0.2, pitch: 'snare', velocity: 0.84 });
+        percussionCymbalsNotes.push({ time: b + 1, duration: 0.08, pitch: 'hihat_closed', velocity: 0.45 });
+        percussionCymbalsNotes.push({ time: b + 2.75, duration: 0.08, pitch: 'hihat_open', velocity: 0.52 });
+      } else if (isHyperpop) {
+        for (let beat = 0; beat < 4; beat++) {
+          drumsKickSnareNotes.push({ time: b + beat, duration: 0.18, pitch: 'kick', velocity: 0.88 });
+        }
+        drumsKickSnareNotes.push({ time: b + 1, duration: 0.12, pitch: 'clap', velocity: 0.85 });
+        drumsKickSnareNotes.push({ time: b + 3, duration: 0.12, pitch: 'snare', velocity: 0.8 });
+        for (let step = 0.25; step < 4; step += 0.5) {
+          percussionCymbalsNotes.push({ time: b + step, duration: 0.05, pitch: 'hihat_closed', velocity: random() < 0.35 ? 0.7 : 0.38 });
+        }
+      } else if (isBreakbeat) {
+        drumsKickSnareNotes.push({ time: b, duration: 0.24, pitch: 'kick', velocity: 0.9 });
+        drumsKickSnareNotes.push({ time: b + 1.5, duration: 0.2, pitch: 'kick', velocity: 0.64 });
+        drumsKickSnareNotes.push({ time: b + 2.5, duration: 0.2, pitch: 'snare', velocity: 0.84 });
+        percussionCymbalsNotes.push({ time: b + 0.5, duration: 0.08, pitch: 'hihat_closed', velocity: 0.58 });
+        percussionCymbalsNotes.push({ time: b + 1.5, duration: 0.08, pitch: 'hihat_open', velocity: 0.5 });
+        percussionCymbalsNotes.push({ time: b + 3.5, duration: 0.08, pitch: 'hihat_closed', velocity: 0.46 });
       } else {
         // 4 on the floor / Electro
         drumsKickSnareNotes.push({ time: b + 0, duration: 0.2, pitch: 'kick', velocity: 1.0 });
@@ -437,20 +677,33 @@ function generate100StageSong(
     }
 
     // 2. SUB-BASS (Pure 35Hz Foundation) & MID-BASS (Rolling Wobble / Reese)
-    if (isDrop && isDubstep) {
+    if (isAmbient) {
+      if (bar % 8 === 0) subBassNotes.push({ time: b, duration: 15.5, pitch: rootSub, velocity: 0.22 });
+    } else if (isDrop && isDubstep) {
       // Subwoofer foundation
       subBassNotes.push({ time: b + 0, duration: 1.8, pitch: rootSub, velocity: 1.0 });
       subBassNotes.push({ time: b + 2, duration: 1.8, pitch: rootSub, velocity: 0.95 });
 
       // Dark Deep Rolling Bass with modulated LFO wobble
-      const wobble1 = isPart3 ? 7.0 : 3.5;
-      const wobble2 = isPart3 ? 11.0 : 7.0;
+      const selectedWubRate = wubSpeed?.includes('1/16')
+        ? (chosenBpm / 60) * 3
+        : wubSpeed?.includes('Triplet')
+          ? (chosenBpm / 60) * 2.25
+          : wubSpeed?.includes('Yoi')
+            ? 5.25
+            : wubSpeed?.includes('Tearout')
+              ? 9
+              : wubSpeed?.includes('Acid')
+                ? 2.5
+                : (chosenBpm / 60) * 1.5;
+      const wobble1 = Math.min(14, selectedWubRate * (isPart3 ? 1.6 : 1));
+      const wobble2 = Math.min(16, selectedWubRate * (isPart3 ? 2.2 : 2));
       midBassNotes.push({ time: b + 0, duration: 0.9, pitch: rootMid, wobbleRate: wobble1, velocity: 1.0 });
-      midBassNotes.push({ time: b + 1.0, duration: 0.45, pitch: 'D2', wobbleRate: wobble2, velocity: 0.9 });
-      midBassNotes.push({ time: b + 1.5, duration: 0.45, pitch: 'C1', wobbleRate: 4.5, velocity: 0.85 });
+      if (random() < arrangementDensity) midBassNotes.push({ time: b + 1.0, duration: 0.45, pitch: scalePitch(chosenKey, progressionDegree + 2, 2), wobbleRate: wobble2, velocity: 0.9 });
+      if (random() < arrangementDensity) midBassNotes.push({ time: b + 1.5, duration: 0.45, pitch: scalePitch(chosenKey, progressionDegree + 4, 1), wobbleRate: selectedWubRate, velocity: 0.85 });
       midBassNotes.push({ time: b + 2.25, duration: 0.65, pitch: rootMid, wobbleRate: wobble1, velocity: 0.95 });
-      midBassNotes.push({ time: b + 3.0, duration: 0.45, pitch: 'F1', wobbleRate: 9.0, velocity: 0.9 });
-      midBassNotes.push({ time: b + 3.5, duration: 0.45, pitch: 'G#1', wobbleRate: 11.0, velocity: 0.95 });
+      if (random() < arrangementDensity) midBassNotes.push({ time: b + 3.0, duration: 0.45, pitch: scalePitch(chosenKey, progressionDegree + 1, 1), wobbleRate: Math.min(16, selectedWubRate * 2), velocity: 0.9 });
+      if (random() < arrangementDensity) midBassNotes.push({ time: b + 3.5, duration: 0.45, pitch: scalePitch(chosenKey, progressionDegree + 3, 1), wobbleRate: Math.min(18, selectedWubRate * 2.5), velocity: 0.95 });
     } else if (isDrop) {
       subBassNotes.push({ time: b + 0, duration: 1.8, pitch: rootSub, velocity: 0.9 });
       subBassNotes.push({ time: b + 2, duration: 1.8, pitch: rootSub, velocity: 0.9 });
@@ -463,22 +716,25 @@ function generate100StageSong(
     }
 
     // 3. LEAD SYNTH (FM lasers, hooks, arpeggios)
-    if (isDrop) {
-      const leadPitch = isDubstep ? (bar % 2 === 0 ? 'D5' : 'F5') : (bar % 2 === 0 ? 'F#5' : 'C#5');
+    if (isAmbient) {
+      if (bar % 8 === 0) leadSynthNotes.push({ time: b, duration: 6, pitch: scalePitch(chosenKey, melodicMotif[bar % melodicMotif.length], 5), velocity: 0.22 });
+    } else if (isDrop) {
+      const motifOffset = melodicMotif[(bar * 5 + Math.floor(bar / 4)) % melodicMotif.length];
+      const leadPitch = scalePitch(chosenKey, motifOffset + (bar % 4 === 3 ? 7 : 0), 5);
       leadSynthNotes.push({ time: b + 0.5, duration: 0.4, pitch: leadPitch, velocity: 0.95 });
-      leadSynthNotes.push({ time: b + 1.25, duration: 0.3, pitch: isDubstep ? 'G#5' : 'E5', velocity: 0.9 });
-      leadSynthNotes.push({ time: b + 2.5, duration: 0.5, pitch: isDubstep ? 'A5' : 'F#5', velocity: 0.95 });
+      if (random() < arrangementDensity) leadSynthNotes.push({ time: b + 1.25, duration: 0.3, pitch: scalePitch(chosenKey, melodicMotif[(bar * 3 + 2) % melodicMotif.length], 5), velocity: 0.9 });
+      if (random() < arrangementDensity) leadSynthNotes.push({ time: b + 2.5, duration: 0.5, pitch: scalePitch(chosenKey, melodicMotif[(bar * 3 + 4) % melodicMotif.length], 5), velocity: 0.95 });
     } else if (isBuild) {
-      leadSynthNotes.push({ time: b + 0, duration: 1.0, pitch: isDubstep ? 'D5' : 'A4', velocity: 0.85 });
-      leadSynthNotes.push({ time: b + 2, duration: 1.0, pitch: isDubstep ? 'F5' : 'C#5', velocity: 0.9 });
+      leadSynthNotes.push({ time: b + 0, duration: 1.0, pitch: scalePitch(chosenKey, melodicMotif[bar % melodicMotif.length], 4), velocity: 0.85 });
+      leadSynthNotes.push({ time: b + 2, duration: 1.0, pitch: scalePitch(chosenKey, melodicMotif[(bar + 2) % melodicMotif.length], 5), velocity: 0.9 });
     } else if (bar >= 8 && bar % 2 === 0) {
-      leadSynthNotes.push({ time: b + 0, duration: 0.8, pitch: isDubstep ? 'D4' : 'F#4', velocity: 0.7 });
-      leadSynthNotes.push({ time: b + 2, duration: 0.8, pitch: isDubstep ? 'A4' : 'C#4', velocity: 0.75 });
+      leadSynthNotes.push({ time: b + 0, duration: 0.8, pitch: scalePitch(chosenKey, melodicMotif[bar % melodicMotif.length], 4), velocity: 0.7 });
+      leadSynthNotes.push({ time: b + 2, duration: 0.8, pitch: scalePitch(chosenKey, melodicMotif[(bar + 3) % melodicMotif.length], 4), velocity: 0.75 });
     }
 
     // 4. VOCALS (Lead & Backing Chants)
-    if (bar % 8 === 0 && !isIntro && !isOutro) {
-      const vPitch = isDubstep ? (bar % 16 === 0 ? 'D5' : 'F5') : (bar % 16 === 0 ? 'F#5' : 'A5');
+    if (!isInstrumental && !isAmbient && bar % 8 === 0 && !isIntro && !isOutro) {
+      const vPitch = scalePitch(chosenKey, melodicMotif[bar % melodicMotif.length], 5);
       leadVocalsNotes.push({
         time: b + 0,
         duration: 2.5,
@@ -490,7 +746,7 @@ function generate100StageSong(
       backingVocalsNotes.push({
         time: b + 0,
         duration: 3.0,
-        pitch: isDubstep ? 'D4' : 'F#4',
+        pitch: scalePitch(chosenKey, melodicMotif[(bar + 4) % melodicMotif.length], 4),
         vowel: 'u',
         velocity: 0.7,
       });
@@ -498,12 +754,17 @@ function generate100StageSong(
   }
 
   // FX Transitions across all 3 parts
-  fxTransitionsNotes.push({ time: 0, duration: 3.0, pitch: 'sub_drop', velocity: 0.85 });
-  fxTransitionsNotes.push({ time: (part1EndSec - 6) / secPerBeat, duration: 4.0, pitch: 'riser', velocity: 0.9 });
-  fxTransitionsNotes.push({ time: part1EndSec / secPerBeat, duration: 1.0, pitch: 'crash', velocity: 1.0 });
-  fxTransitionsNotes.push({ time: (part2EndSec - 8) / secPerBeat, duration: 4.0, pitch: 'riser', velocity: 0.95 });
-  fxTransitionsNotes.push({ time: part2EndSec / secPerBeat, duration: 1.0, pitch: 'crash', velocity: 1.0 });
-  fxTransitionsNotes.push({ time: (finalDuration - 8) / secPerBeat, duration: 4.0, pitch: 'sub_drop', velocity: 0.85 });
+  if (isAmbient) {
+    fxTransitionsNotes.push({ time: 0, duration: 8.0, pitch: 'riser', velocity: 0.12 });
+    fxTransitionsNotes.push({ time: (finalDuration * 0.48) / secPerBeat, duration: 12.0, pitch: 'riser', velocity: 0.1 });
+  } else {
+    fxTransitionsNotes.push({ time: 0, duration: 3.0, pitch: 'sub_drop', velocity: 0.85 });
+    fxTransitionsNotes.push({ time: (part1EndSec - 6) / secPerBeat, duration: 4.0, pitch: 'riser', velocity: 0.9 });
+    fxTransitionsNotes.push({ time: part1EndSec / secPerBeat, duration: 1.0, pitch: 'crash', velocity: 1.0 });
+    fxTransitionsNotes.push({ time: (part2EndSec - 8) / secPerBeat, duration: 4.0, pitch: 'riser', velocity: 0.95 });
+    fxTransitionsNotes.push({ time: part2EndSec / secPerBeat, duration: 1.0, pitch: 'crash', velocity: 1.0 });
+    fxTransitionsNotes.push({ time: (finalDuration - 8) / secPerBeat, duration: 4.0, pitch: 'sub_drop', velocity: 0.85 });
+  }
 
   // Base 10-Stem Matrix
   const stems: Record<string, any> = {
@@ -515,7 +776,7 @@ function generate100StageSong(
       color: '#f43f5e',
       volume: 0.9,
       pan: 0,
-      muted: false,
+      muted: isInstrumental,
       solo: false,
       notes: leadVocalsNotes,
     },
@@ -527,7 +788,7 @@ function generate100StageSong(
       color: '#fb7185',
       volume: 0.75,
       pan: -0.25,
-      muted: false,
+      muted: isInstrumental,
       solo: false,
       notes: backingVocalsNotes,
     },
@@ -703,6 +964,27 @@ function generate100StageSong(
     },
   };
 
+  for (const legacyStem of ['vocals', 'lead', 'chords', 'bass', 'drums', 'fx']) {
+    stems[legacyStem].muted = true;
+  }
+
+  const coreStemByFamily: Record<string, string> = {
+    sub_bass: 'sub_bass',
+    rolling_wubs: 'mid_bass',
+    heavy_drums: 'drums_kick_snare',
+    percussion: 'percussion_cymbals',
+    leads: 'lead_synth',
+    chords: 'chords_harmony',
+    atmosphere: 'atmosphere_pad',
+    vocals: 'lead_vocals',
+    buildups: 'fx_transitions',
+    drops_fx: 'fx_transitions',
+  };
+  for (const family of new Set(STEM_LIBRARY_100.filter((stem) => selectedStemIds.has(stem.id)).map((stem) => stem.family))) {
+    const primaryStem = coreStemByFamily[family];
+    if (primaryStem) stems[primaryStem].muted = true;
+  }
+
   // Populate dynamic stems from the 100-stem library so user can access and modify any of the 100 stems
   for (const def of STEM_LIBRARY_100) {
     if (!stems[def.id]) {
@@ -716,6 +998,19 @@ function generate100StageSong(
       else if (def.family === 'vocals') sourceNotes = leadVocalsNotes;
       else if (def.family === 'buildups' || def.family === 'drops_fx') sourceNotes = fxTransitionsNotes;
 
+      const fxFamily = def.family === 'buildups' || def.family === 'drops_fx';
+      const familyMembers = STEM_LIBRARY_100.filter((stem) =>
+        fxFamily
+          ? (stem.family === 'buildups' || stem.family === 'drops_fx') && selectedStemIds.has(stem.id)
+          : stem.family === def.family && selectedStemIds.has(stem.id)
+      );
+      const selectedIndex = familyMembers.findIndex((stem) => stem.id === def.id);
+      const stemNotes = selectedIndex < 0
+        ? selectedStemIds.size && familyMembers.length
+          ? []
+          : sourceNotes
+        : sourceNotes.filter((_, noteIndex) => noteIndex % familyMembers.length === selectedIndex);
+
       stems[def.id] = {
         id: def.id,
         name: def.name,
@@ -724,9 +1019,9 @@ function generate100StageSong(
         color: def.color,
         volume: def.defaultVolume,
         pan: def.defaultPan,
-        muted: false,
+        muted: selectedIndex < 0,
         solo: false,
-        notes: sourceNotes,
+        notes: stemNotes,
       };
     }
   }
@@ -736,36 +1031,34 @@ function generate100StageSong(
     title: prompt.length > 40 ? `${prompt.slice(0, 36).trim()}...` : prompt || 'DiffRhythm 100-Stage Masterpiece',
     prompt,
     genre: chosenGenre,
-    subGenres: [chosenGenre, chosenMood, '3-Minute Full Mix', '100-Stage Melded Matrix', '100-Stem Studio Architecture'],
+    subGenres: [chosenGenre, chosenMood, '3-Minute Full Mix', `${stages.length}-Stage Arrangement`, '100-Stem Sound Library'],
     bpm: chosenBpm,
     key: chosenKey,
-    scale: 'minor' as const,
+    scale: chosenKey.toLowerCase().includes('major') ? 'major' as const : 'minor' as const,
     timeSignature: '4/4' as const,
     durationSec: finalDuration,
     vocalStyle: chosenVocal,
     mood: chosenMood,
     acousticProfile: {
-      energy: isDubstep ? 0.96 : 0.88,
-      danceability: 0.86,
-      valence: isDubstep ? 0.35 : 0.65,
-      acousticness: 0.05,
-      spaceReverb: 0.7,
+      energy: isAmbient ? 0.28 : isLofi ? 0.44 : isDubstep || isDnb || isHyperpop ? 0.92 : isBright ? 0.88 : 0.72,
+      danceability: isAmbient ? 0.18 : isHouse || isCityPop ? 0.88 : isDnb || isTrap ? 0.82 : 0.68,
+      valence: isDark ? 0.28 : isBright ? 0.84 : isLofi ? 0.48 : 0.62,
+      acousticness: isAmbient || isJazz ? 0.42 : isLofi ? 0.34 : 0.08,
+      spaceReverb: isAmbient ? 0.82 : isLofi || isJazz ? 0.48 : 0.3,
     },
-    diffusionMeta: {
-      steps: 60,
-      cfgScale: 5.5,
-      sampler: 'Euler-A',
-      seed: Math.floor(Math.random() * 999999),
-      model: 'DiffRhythm-2-DiT-Audio-Large',
+    synthesisMeta: {
+      seed: compositionSeed,
+      model: 'Procedural Web Audio synthesizer',
       generatedAt: new Date().toISOString(),
-      compositionMethod: '100-stage-melded' as const,
+      compositionMethod: 'procedural-composition' as const,
     },
     parts,
     stages,
     comprehension,
     variance,
+    motifSignature: melodicMotif.map((degree) => scalePitch(chosenKey, degree, 5)),
     chordsProgression,
-    lyrics,
+    lyrics: generatedLyrics,
     stems,
   };
 }
@@ -775,6 +1068,144 @@ app.post('/api/analyze-prompt', (req, res) => {
   const { prompt, variance, bpm, key, genre } = req.body;
   const analysis = analyzeMusicComprehension(prompt || '', { variance, bpm, key, genre });
   res.json(analysis);
+});
+
+app.get('/api/youtube/search', async (req, res) => {
+  const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+  if (query.length < 2) return res.status(400).json({ error: 'Enter at least two search characters.' });
+  if (!process.env.YOUTUBE_API_KEY) {
+    return res.status(503).json({ error: 'YouTube search is not configured. Set YOUTUBE_API_KEY on the server.' });
+  }
+
+  try {
+    const url = new URL('https://www.googleapis.com/youtube/v3/search');
+    url.search = new URLSearchParams({
+      part: 'snippet',
+      type: 'video',
+      maxResults: '10',
+      safeSearch: 'moderate',
+      q: query,
+      key: process.env.YOUTUBE_API_KEY,
+    }).toString();
+    const response = await fetch(url);
+    const payload = await response.json();
+    if (!response.ok) {
+      return res.status(502).json({ error: payload.error?.message || 'YouTube search failed.' });
+    }
+
+    const results = (payload.items || []).map((item: any) => ({
+      videoId: item.id?.videoId,
+      title: item.snippet?.title || 'Untitled video',
+      channelTitle: item.snippet?.channelTitle || 'Unknown channel',
+      publishedAt: item.snippet?.publishedAt || '',
+      thumbnailUrl: item.snippet?.thumbnails?.medium?.url || item.snippet?.thumbnails?.default?.url || '',
+    })).filter((item: any) => item.videoId);
+    return res.json({ results });
+  } catch {
+    return res.status(502).json({ error: 'Could not connect to YouTube search.' });
+  }
+});
+
+app.post('/api/youtube/analyze', async (req, res) => {
+  const videoId = typeof req.body.videoId === 'string' ? req.body.videoId.trim() : '';
+  if (!/^[\w-]{11}$/.test(videoId)) return res.status(400).json({ error: 'A valid YouTube video ID is required.' });
+  if (!process.env.YOUTUBE_API_KEY) {
+    return res.status(503).json({ error: 'YouTube reference analysis is not configured. Set YOUTUBE_API_KEY on the server.' });
+  }
+
+  try {
+    const url = new URL('https://www.googleapis.com/youtube/v3/videos');
+    url.search = new URLSearchParams({
+      part: 'snippet',
+      id: videoId,
+      key: process.env.YOUTUBE_API_KEY,
+    }).toString();
+    const response = await fetch(url);
+    const payload = await response.json();
+    if (!response.ok) {
+      return res.status(502).json({ error: payload.error?.message || 'YouTube metadata lookup failed.' });
+    }
+    const video = payload.items?.[0];
+    if (!video) return res.status(404).json({ error: 'That video is unavailable.' });
+
+    const snippet = video.snippet || {};
+    const metadataText = `${snippet.title || ''} ${(snippet.tags || []).join(' ')} ${snippet.description || ''}`
+      .slice(0, 12000)
+      .toLowerCase();
+    const genre = [
+      'drum and bass', 'drum & bass', 'dnb', 'dubstep', 'synthwave', 'techno',
+      'house', 'hip hop', 'hip-hop', 'ambient', 'jazz', 'metal', 'pop', 'orchestral',
+    ].find((candidate) => metadataText.includes(candidate)) || 'Unclassified';
+    const moodCues = ['dark', 'uplifting', 'melancholic', 'aggressive', 'dreamy', 'energetic', 'cinematic', 'relaxed']
+      .filter((cue) => metadataText.includes(cue));
+    const productionCues = [
+      'analog synthesizer', 'synthesizer', 'synth', 'live drums', '808', 'breakbeat',
+      'orchestral', 'acoustic guitar', 'electric guitar', 'piano', 'strings', 'distorted bass',
+    ].filter((cue) => metadataText.includes(cue));
+    const bpmMatch = metadataText.match(/\b(4[0-9]|[5-9][0-9]|1[0-9]{2}|200)\s*(?:bpm|beats per minute)\b/);
+    const keyMatch = metadataText.match(/\b([a-g](?:#|b)?)\s*(major|minor)\b/i);
+    const bpm = bpmMatch ? Number(bpmMatch[1]) : undefined;
+    const key = keyMatch ? `${keyMatch[1].toUpperCase()} ${keyMatch[2][0].toUpperCase()}${keyMatch[2].slice(1).toLowerCase()}` : undefined;
+    const styleNotes = [
+      `Genre cue: ${genre}.`,
+      moodCues.length ? `Mood cues: ${moodCues.join(', ')}.` : '',
+      productionCues.length ? `Production cues: ${productionCues.join(', ')}.` : '',
+      bpm ? `Metadata-declared tempo: ${bpm} BPM.` : '',
+      key ? `Metadata-declared key: ${key}.` : '',
+      'Use only these broad metadata cues as inspiration; create original harmony, melody, rhythm, and lyrics.',
+    ].filter(Boolean).join(' ');
+
+    return res.json({
+      reference: {
+        videoId,
+        title: snippet.title || 'Untitled video',
+        channelTitle: snippet.channelTitle || 'Unknown channel',
+        publishedAt: snippet.publishedAt || '',
+        thumbnailUrl: snippet.thumbnails?.medium?.url || snippet.thumbnails?.default?.url || '',
+        url: `https://www.youtube.com/watch?v=${videoId}`,
+        genre,
+        bpm,
+        key,
+        moodCues,
+        productionCues,
+        styleNotes,
+        influence: 0.5,
+        addedAt: new Date().toISOString(),
+      },
+    });
+  } catch {
+    return res.status(502).json({ error: 'Could not analyze YouTube video metadata.' });
+  }
+});
+
+app.post('/api/enhance-prompt', (req, res) => {
+  const { prompt, genre, mood, bpm, key, vocalStyle, selectedStems } = req.body;
+  if (typeof prompt !== 'string' || !prompt.trim()) {
+    return res.status(400).json({ error: 'A prompt is required' });
+  }
+
+  const productionDetails = [
+    genre,
+    bpm ? `${bpm} BPM` : undefined,
+    key ? `key of ${key}` : undefined,
+    vocalStyle ? `${vocalStyle} vocals` : undefined,
+    mood,
+  ].filter(Boolean);
+  const selectedStemNames = Array.isArray(selectedStems)
+    ? selectedStems
+        .map((id: string) => STEM_LIBRARY_100.find((stem) => stem.id === id)?.name)
+        .filter(Boolean)
+    : [];
+
+  const enhancedPrompt = [
+    prompt.trim(),
+    productionDetails.length ? `Production direction: ${productionDetails.join(', ')}.` : '',
+    selectedStemNames.length ? `Featured sound design: ${selectedStemNames.join(', ')}.` : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+
+  res.json({ enhancedPrompt });
 });
 
 // 2. API: Generate Full-Stack Song from English Prompt
@@ -788,13 +1219,14 @@ app.post('/api/generate-song', async (req, res) => {
       key,
       vocalStyle,
       instruments,
-      diffusionSteps,
-      cfgScale,
-      sampler,
       customLyrics,
       durationSec,
       variance,
       wubSpeed,
+      selectedStems,
+      buildDropDensity,
+      referenceNotes,
+      recentMotifs,
     } = req.body;
 
     // Minimum 180 seconds (3 full minutes!)
@@ -803,12 +1235,25 @@ app.post('/api/generate-song', async (req, res) => {
     if (!prompt && !customLyrics) {
       return res.status(400).json({ error: 'Prompt or lyrics required' });
     }
+    const safeReferenceNotes = typeof referenceNotes === 'string' ? referenceNotes.slice(0, 5000) : '';
+    const generationPrompt = [prompt, safeReferenceNotes]
+      .filter((value) => typeof value === 'string' && value.trim())
+      .join('\n\nProduction reference notes:\n');
+    const safeSelectedStems = Array.isArray(selectedStems)
+      ? selectedStems.filter((id: unknown) => typeof id === 'string' && STEM_LIBRARY_100.some((stem) => stem.id === id))
+      : [];
+    const safeRecentMotifs = Array.isArray(recentMotifs)
+      ? recentMotifs.slice(0, 8)
+          .map((motif: unknown) => Array.isArray(motif) ? motif.slice(0, 8).filter((note: unknown) => typeof note === 'string').map(String) : [])
+          .filter((motif: string[]) => motif.length === 8)
+      : [];
+    const stageDensity = Math.max(20, Math.min(100, Number(buildDropDensity) || 100));
 
-    // If Gemini API Key is not set, use high-fidelity 100-stage composition engine
+    // The procedural engine remains the actual audio generator; Gemini only augments composition metadata.
     if (!process.env.GEMINI_API_KEY) {
-      console.log('No GEMINI_API_KEY provided; generating with DiffRhythm-2 100-stage engine.');
+      console.log('No GEMINI_API_KEY provided; generating with the procedural composition engine.');
       const fullSong = generate100StageSong(
-        prompt,
+        generationPrompt,
         genre,
         mood,
         bpm,
@@ -818,18 +1263,21 @@ app.post('/api/generate-song', async (req, res) => {
         customLyrics,
         targetDurationSec,
         variance ?? 0.85,
-        wubSpeed
+        wubSpeed,
+        stageDensity,
+        safeSelectedStems,
+        safeRecentMotifs
       );
       return res.json(fullSong);
     }
 
-    const systemPrompt = `You are DiffRhythm-2, an advanced state-of-the-art text-to-full-stack song diffusion neural engine with evolutionary music comprehension.
-You compose complete, broadcast-ready 3-minute+ musical architectures with 100 melded micro-movement stages (buildups, drops, rolling wubs, tearouts, fakeouts).
+    const systemPrompt = `You are a music arrangement assistant. Return a concise, valid JSON composition brief for a procedural synthesizer.
+Describe a coherent full-length musical architecture with section changes, builds, drops, breakdowns, and original lyrical ideas.
 Your knowledge is deeply grounded in underground dubstep sound system culture, Deep Dark & Dangerous (DDD / TRUTH), Trench / Minimal Flow (Infekt / Getter), UK Dubplate (DMZ / Mala / Coki), Tearout (Marauda), and Leftfield Halftime (Alix Perez / 1985).
 
-CRITICAL SONG DURATION & COMPOSITION REQUIREMENT:
+COMPOSITION REQUIREMENTS:
 The song durationSec MUST be at least 180 seconds (3 minutes) up to 240 seconds.
-The song has 100 melded stages including multiple escalating buildups, colossal drops, dark rolling wubs, sub dives, and breakdowns.
+Use the requested arrangement density and genre to plan section contrast, builds, drops, and breakdowns.
 
 UNDERGROUND SOUND SYSTEM DUBSTEP SPECIFICATIONS:
 - If Dubstep / Deep Bass / Wub / Trench / Tearout is requested or detected:
@@ -852,8 +1300,9 @@ Return JSON with:
 - chordsProgression: array of chord objects: { bar, time, chord, notes }
 - lyrics: array of 9 lyric line objects across all parts`;
 
-    const userMessage = `Generate a full 3-minute+ 100-stage song (Duration: ${targetDurationSec}s) from this prompt:
+    const userMessage = `Create a full-length musical composition brief (Duration: ${targetDurationSec}s) from this prompt:
 Prompt: "${prompt}"
+Metadata-derived reference direction: "${safeReferenceNotes || 'None'}"
 Target Duration: ${targetDurationSec} seconds (minimum 180s / 3 minutes)
 Genre preference: ${genre || 'Auto-detect'}
 Mood preference: ${mood || 'Auto-detect'}
@@ -861,6 +1310,8 @@ Tempo (BPM): ${bpm || (prompt.toLowerCase().includes('dubstep') ? 140 : 'Auto-de
 Key: ${key || 'Auto-detect'}
 Vocal Style: ${vocalStyle || 'Auto-detect'}
 Preferred Instruments: ${instruments ? instruments.join(', ') : 'Auto-select from 100-stem matrix'}
+Selected Sound Design Stems: ${safeSelectedStems.map((id: string) => STEM_LIBRARY_100.find((stem) => stem.id === id)?.name).filter(Boolean).join(', ') || 'Auto-select from matrix'}
+Arrangement density: ${stageDensity} out of 100.
 Custom Lyrics: ${customLyrics || 'Auto-generate matching lyrics across all movements'}`;
 
     try {
@@ -878,9 +1329,9 @@ Custom Lyrics: ${customLyrics || 'Auto-generate matching lyrics across all movem
 
       const parsed = JSON.parse(jsonText);
 
-      // Merge Gemini creative concept with our 100-stage 100-stem composition engine
+      // Gemini supplies text metadata; the procedural engine remains responsible for all audio.
       const baseSong = generate100StageSong(
-        prompt,
+        generationPrompt,
         parsed.genre || genre,
         parsed.mood || mood,
         Number(parsed.bpm) || bpm,
@@ -890,13 +1341,16 @@ Custom Lyrics: ${customLyrics || 'Auto-generate matching lyrics across all movem
         customLyrics,
         Math.max(180, Number(parsed.durationSec) || targetDurationSec),
         variance ?? 0.85,
-        wubSpeed
+        wubSpeed,
+        stageDensity,
+        safeSelectedStems,
+        safeRecentMotifs
       );
 
       // Overlay Gemini's custom title, lyrics, chords, and metadata
       if (parsed.title) baseSong.title = parsed.title;
       if (Array.isArray(parsed.subGenres)) baseSong.subGenres = parsed.subGenres;
-      if (Array.isArray(parsed.lyrics) && parsed.lyrics.length >= 6) {
+      if (!customLyrics?.trim() && Array.isArray(parsed.lyrics) && parsed.lyrics.length >= 6) {
         baseSong.lyrics = parsed.lyrics.map((l: any, idx: number) => ({
           ...l,
           id: `l_${idx + 1}`,
@@ -906,15 +1360,11 @@ Custom Lyrics: ${customLyrics || 'Auto-generate matching lyrics across all movem
       if (Array.isArray(parsed.chordsProgression) && parsed.chordsProgression.length > 0) {
         baseSong.chordsProgression = parsed.chordsProgression;
       }
-      if (diffusionSteps) baseSong.diffusionMeta.steps = diffusionSteps;
-      if (cfgScale) baseSong.diffusionMeta.cfgScale = cfgScale;
-      if (sampler) baseSong.diffusionMeta.sampler = sampler;
-
       return res.json(baseSong);
     } catch (genErr) {
-      console.warn('Gemini generation fallback to 100-stage engine:', genErr);
+      console.warn('Gemini composition metadata unavailable; using procedural composition:', genErr);
       const fullSong = generate100StageSong(
-        prompt,
+        generationPrompt,
         genre,
         mood,
         bpm,
@@ -924,14 +1374,17 @@ Custom Lyrics: ${customLyrics || 'Auto-generate matching lyrics across all movem
         customLyrics,
         targetDurationSec,
         variance ?? 0.85,
-        wubSpeed
+        wubSpeed,
+        stageDensity,
+        safeSelectedStems,
+        safeRecentMotifs
       );
       return res.json(fullSong);
     }
   } catch (err: any) {
     console.error('Song generation error:', err);
     const fallback = generate100StageSong(
-      req.body.prompt || 'Dark Deep Rolling Bass Dubstep',
+      [req.body.prompt, req.body.referenceNotes].filter(Boolean).join('\n\n') || 'Dark Deep Rolling Bass Dubstep',
       req.body.genre,
       req.body.mood,
       req.body.bpm,
@@ -941,7 +1394,10 @@ Custom Lyrics: ${customLyrics || 'Auto-generate matching lyrics across all movem
       req.body.customLyrics,
       199,
       req.body.variance ?? 0.85,
-      req.body.wubSpeed
+      req.body.wubSpeed,
+      req.body.buildDropDensity ?? 100,
+      Array.isArray(req.body.selectedStems) ? req.body.selectedStems : [],
+      Array.isArray(req.body.recentMotifs) ? req.body.recentMotifs : []
     );
     return res.json(fallback);
   }
@@ -951,8 +1407,8 @@ Custom Lyrics: ${customLyrics || 'Auto-generate matching lyrics across all movem
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'online',
-    model: 'DiffRhythm-2',
-    stageEngine: '100-Stage Melded Matrix',
+    model: 'Procedural Web Audio synthesizer',
+    stageEngine: 'Seeded key-aware arrangement',
     durationSupport: '180s - 240s (3+ minutes)',
     stemCount: 100,
     hasGeminiKey: Boolean(process.env.GEMINI_API_KEY),

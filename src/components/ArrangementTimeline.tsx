@@ -1,5 +1,5 @@
 /**
- * DiffRhythm 2 - DAW Multi-Track Arrangement Timeline & 100-Stage Mastered Matrix
+ * DiffRhythm - Arrangement timeline for generated stages, sections, and stems
  * Interactive 100 Buildups/Drops Navigator, Wub Modulation Inspector, Tension Curves & Stem Lanes
  */
 
@@ -159,14 +159,14 @@ export const ArrangementTimeline: React.FC<ArrangementTimelineProps> = ({
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="text-sm font-bold text-white uppercase tracking-wider font-mono">
-                  100-Stage Mastered Sequence & Buildup/Drop Matrix
+                  {stages.length}-Stage Arrangement Map
                 </h3>
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-950/80 border border-cyan-500/40 text-cyan-300">
-                  100 Melded Pieces
+                  {stages.length} Stages
                 </span>
               </div>
               <p className="text-[11px] text-zinc-400 font-mono">
-                {formatTime(duration)} Total Length · {stages.length} Mastered Micro-Stages · 140 BPM Dark Rolling Dubstep
+                {formatTime(duration)} · {song.bpm} BPM · {song.genre}
               </p>
             </div>
           </div>
@@ -194,7 +194,7 @@ export const ArrangementTimeline: React.FC<ArrangementTimelineProps> = ({
                     : 'text-zinc-400 hover:text-white'
                 }`}
               >
-                100 Stages Matrix
+                {stages.length} Stages
               </button>
               <button
                 type="button"
@@ -341,24 +341,24 @@ export const ArrangementTimeline: React.FC<ArrangementTimelineProps> = ({
           </div>
         </div>
 
-        {/* SECTION 1: 100-STAGE MASTERED MATRIX & TENSION STRIP (Visible in unified or 100_stages) */}
+        {/* Arrangement stage and tension strip */}
         {(viewMode === 'unified' || viewMode === '100_stages') && (
           <div className="space-y-2">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs font-mono">
               <div className="flex items-center gap-2">
                 <Flame size={14} className="text-amber-400" />
                 <span className="font-bold text-white uppercase text-[11px]">
-                  100 Melded Micro-Stages & Tension Blueprint
+                  {stages.length} Arrangement Stages & Tension
                 </span>
                 <span className="text-zinc-500 text-[10px]">
-                  (Click any stage to audition piece)
+                  (Click a stage to seek)
                 </span>
               </div>
 
               {/* Stage Filter Chips */}
               <div className="flex items-center gap-1 text-[10px]">
                 {[
-                  { id: 'all', label: 'All 100' },
+                  { id: 'all', label: `All ${stages.length}` },
                   { id: 'drops', label: 'Drops & Tearouts' },
                   { id: 'buildups', label: 'Buildups & Risers' },
                   { id: 'wubs', label: 'Rolling Wubs' },
@@ -380,7 +380,7 @@ export const ArrangementTimeline: React.FC<ArrangementTimelineProps> = ({
               </div>
             </div>
 
-            {/* 100-STAGE INTERACTIVE RACK (100 distinct bars across the 3-minute width) */}
+            {/* Interactive stage rack */}
             <div
               onClick={handleTimelineClick}
               className="relative h-20 bg-zinc-950 border border-zinc-800 rounded-xl p-2 cursor-pointer select-none overflow-hidden flex items-end gap-[1px]"
@@ -393,7 +393,7 @@ export const ArrangementTimeline: React.FC<ArrangementTimelineProps> = ({
                 <div className="w-2.5 h-2.5 bg-cyan-400 rounded-full -translate-x-[4px] -translate-y-1 shadow-md shadow-cyan-400/80" />
               </div>
 
-              {/* 100 Micro-Stage Bars */}
+              {/* Arrangement stage bars */}
               {stages.map((stage, idx) => {
                 const isCurrent = idx === currentStageIndex;
                 const barColor = getStageColor(stage.type);

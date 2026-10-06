@@ -4,7 +4,7 @@
  * latent variance control, 100 buildups & drops, and dark rolling wub modulation.
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Sparkles,
   Wand2,
@@ -25,6 +25,7 @@ import {
   Check,
   X,
   Compass,
+  Flame,
 } from 'lucide-react';
 import { SongGenerationParams } from '../types/music';
 import {
@@ -46,9 +47,11 @@ interface PromptStudioProps {
   onGenerate: (params: SongGenerationParams) => void;
   isGenerating: boolean;
   diffusionStepProgress: number;
+  generationStatus: string;
 }
 
 const GENRE_OPTIONS = [
+  'Auto-detect',
   'Deep Dubstep',
   'Dark 140 Sub Dubstep',
   'Tearout / Riddim',
@@ -135,38 +138,27 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
   onGenerate,
   isGenerating,
   diffusionStepProgress,
+  generationStatus,
 }) => {
   // Advanced Prompt State (Support for 25,000+ characters)
   const [prompt, setPrompt] = useState(
     'Dark deep rolling bass dubstep at 140 BPM with subterranean 35Hz sub-bass, half-time heavy punch drums, gunshot snares, neuro wobble, and ominous vocal chants. Melded with 100 buildups and drops, micro-gate false drop cuts, and subterranean pressure swells.'
   );
-  const [selectedGenre, setSelectedGenre] = useState('Deep Dubstep');
+  const [selectedGenre, setSelectedGenre] = useState('Auto-detect');
   const [bpm, setBpm] = useState(140);
-  const [selectedKey, setSelectedKey] = useState('D Minor');
+  const [bpmInput, setBpmInput] = useState('140');
+  const [tempoAuto, setTempoAuto] = useState(true);
+  const [selectedKey, setSelectedKey] = useState('Auto-detect');
   const [durationSec, setDurationSec] = useState<number>(199); // 3m 19s
-  const [selectedVocalStyle, setSelectedVocalStyle] = useState('Dark Cyber Chant & Sub Vocoder');
+  const [selectedVocalStyle, setSelectedVocalStyle] = useState('Auto-detect');
 
   // Variance & Wub Controls
   const [variance, setVariance] = useState<number>(0.85); // 0 to 1
-  const [wubSpeed, setWubSpeed] = useState<string>('1/8 Dark Rolling Wub');
+  const [wubSpeed, setWubSpeed] = useState<string>('Auto-detect');
   const [buildDropCount, setBuildDropCount] = useState<number>(100);
 
   // 100-Stem Matrix Selection
-  const [selected100Stems, setSelected100Stems] = useState<string[]>([
-    'sub_35hz_rumble',
-    'wub_1_8_rolling',
-    'wub_1_16_neuro',
-    'wub_yoi_growl',
-    'drum_140_punch_kick',
-    'drum_gunshot_snare',
-    'perc_16th_closed_hat',
-    'lead_fm_laser_zap',
-    'chord_minor9_abyssal',
-    'atmo_trench_drone',
-    'vocal_formant_chants',
-    'rise_snare_accelerando',
-    'drop_sub_impact_100t',
-  ]);
+  const [selected100Stems, setSelected100Stems] = useState<string[]>([]);
 
   // Modals & Drawers
   const [showStemMatrixModal, setShowStemMatrixModal] = useState(false);
@@ -177,10 +169,18 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
   const [showAdvancedParams, setShowAdvancedParams] = useState(false);
   const [isEnhancing, setIsEnhancing] = useState(false);
 
-  // Diffusion Settings
-  const [diffusionSteps, setDiffusionSteps] = useState(60);
-  const [cfgScale, setCfgScale] = useState(5.5);
-  const [sampler, setSampler] = useState<'Euler-A' | 'DPM++ 2M SDE' | 'DDIM'>('Euler-A');
+  const updateBpm = (value: number) => {
+    const nextBpm = Math.max(30, Math.min(240, Math.round(value)));
+    setBpm(nextBpm);
+    setBpmInput(String(nextBpm));
+    setTempoAuto(false);
+  };
+
+  useEffect(() => {
+    setEvolutionState(evolutionaryEngine.getState());
+  }, [isGenerating]);
+
+  // Lyrics settings
   const [lyricsMode, setLyricsMode] = useState<'auto' | 'custom'>('auto');
   const [customLyrics, setCustomLyrics] = useState('');
 
@@ -188,11 +188,19 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
   const musicComprehension = useMemo(() => {
     return analyzeMusicComprehension(prompt, {
       variance,
-      bpm,
-      key: selectedKey,
-      genre: selectedGenre,
+      bpm: tempoAuto ? undefined : bpm,
+      key: selectedKey === 'Auto-detect' ? undefined : selectedKey,
+      genre: selectedGenre === 'Auto-detect' ? undefined : selectedGenre,
+      wubSpeed: wubSpeed === 'Auto-detect' ? undefined : wubSpeed,
+      buildDropCount,
     });
-  }, [prompt, variance, bpm, selectedKey, selectedGenre]);
+  }, [prompt, variance, bpm, tempoAuto, selectedKey, selectedGenre, wubSpeed, buildDropCount]);
+  const effectiveGenre = selectedGenre === 'Auto-detect' ? musicComprehension.extractedGenre : selectedGenre;
+  const effectiveBpm = tempoAuto ? musicComprehension.detectedBpm : bpm;
+  const effectiveKey = selectedKey === 'Auto-detect' ? musicComprehension.detectedKey : selectedKey;
+  const adaptiveModelUpdates = Object.values(evolutionState.mixModel ?? {})
+    .flatMap((profiles) => Object.values(profiles))
+    .reduce((total, profile) => total + profile.outcomes, 0);
 
   const toggle100Stem = (id: string) => {
     setSelected100Stems((prev) =>
@@ -203,7 +211,7 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
   const handleApplyPreset = (item: (typeof PROMPT_SUGGESTIONS)[0]) => {
     setPrompt(item.prompt);
     setSelectedGenre(item.genre);
-    setBpm(item.bpm);
+    updateBpm(item.bpm);
     setSelectedKey(item.key);
   };
 
@@ -216,8 +224,13 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt,
-          genre: selectedGenre,
-          mood: 'Dark Deep Rolling Subwoofer Dubstep with 100 Stages',
+          genre: selectedGenre === 'Auto-detect' ? undefined : selectedGenre,
+          bpm: tempoAuto ? undefined : bpm,
+          key: selectedKey === 'Auto-detect' ? undefined : selectedKey,
+          vocalStyle: selectedVocalStyle === 'Auto-detect' ? undefined : selectedVocalStyle,
+          wubSpeed: wubSpeed === 'Auto-detect' ? undefined : wubSpeed,
+          buildDropDensity: buildDropCount,
+          selectedStems: selected100Stems,
         }),
       });
       const data = await res.json();
@@ -237,17 +250,15 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
 
     onGenerate({
       prompt,
+      genre: selectedGenre === 'Auto-detect' ? undefined : selectedGenre,
       durationSec,
-      diffusionSteps,
-      cfgScale,
-      sampler,
-      vocalStyle: selectedVocalStyle,
+      vocalStyle: selectedVocalStyle === 'Auto-detect' ? undefined : selectedVocalStyle,
       lyricsMode,
       customLyrics: lyricsMode === 'custom' ? customLyrics : undefined,
-      bpm,
-      key: selectedKey,
+      bpm: tempoAuto ? undefined : bpm,
+      key: selectedKey === 'Auto-detect' ? undefined : selectedKey,
       variance,
-      wubSpeed,
+      wubSpeed: wubSpeed === 'Auto-detect' ? undefined : wubSpeed,
       buildDropDensity: buildDropCount,
       selectedStems: selected100Stems,
     });
@@ -304,7 +315,7 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
               onClick={() => {
                 setPrompt(style.samplePrompt);
                 setSelectedGenre(style.name.split('(')[0].trim());
-                setBpm(style.tempoBpm);
+                updateBpm(style.tempoBpm);
                 setSelectedKey(style.keyPreference);
               }}
               className="shrink-0 px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 hover:text-cyan-300 border border-zinc-800 hover:border-cyan-500/50 rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
@@ -316,7 +327,7 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
         </div>
       </div>
 
-      {/* Evolutionary Self-Learning Neural Intelligence Banner */}
+      {/* Local generation and feedback memory */}
       <div className="p-3 bg-gradient-to-r from-purple-950/30 via-zinc-950 to-cyan-950/30 border border-purple-500/30 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
         <div className="flex items-center gap-2.5">
           <div className="w-7 h-7 rounded-lg bg-purple-500/20 border border-purple-500/40 flex items-center justify-center shrink-0">
@@ -325,21 +336,24 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <span className="text-xs font-bold text-white font-mono">
-                Evolutionary Self-Learning Neural Engine (Gen #{evolutionState.currentGeneration})
+                Local Generation Memory ({evolutionState.currentGeneration} songs)
               </span>
               <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-purple-950 text-purple-300 border border-purple-500/30">
-                {evolutionState.comprehensionAccuracyPercent}% Accuracy
+                {adaptiveModelUpdates} model updates
               </span>
             </div>
             <p className="text-[10px] text-zinc-400 font-mono">
-              {evolutionState.soundSystemMasteryLevel} · {evolutionState.vocabularySize} Learned Acoustic Tokens · Self-improving every song
+              {evolutionState.vocabularySize} prompt tokens learned · Listening outcomes and ratings steer future mixes
             </p>
           </div>
         </div>
 
         <button
           type="button"
-          onClick={() => setShowEvolutionModal(true)}
+          onClick={() => {
+            setEvolutionState(evolutionaryEngine.getState());
+            setShowEvolutionModal(true);
+          }}
           className="px-3 py-1 bg-purple-500/15 hover:bg-purple-500/25 text-purple-300 hover:text-white border border-purple-500/40 rounded-lg text-xs font-mono transition-colors cursor-pointer shrink-0"
         >
           View Evolved 7-Step Pipeline
@@ -391,10 +405,10 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
             <div className="flex items-center gap-2">
               <Zap size={14} className="text-cyan-400" />
               <h4 className="text-xs font-bold text-white uppercase tracking-wider font-mono">
-                AI Music Comprehension & Sound Design Blueprint
+                Prompt Analysis & Sound Design Blueprint
               </h4>
             </div>
-            <span className="text-[10px] font-mono text-cyan-400">Live Neural Parser</span>
+            <span className="text-[10px] font-mono text-cyan-400">Local music-brief analysis</span>
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
@@ -402,7 +416,7 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
             <div className="p-2.5 bg-zinc-900/70 border border-zinc-800 rounded-lg">
               <span className="block text-[9px] uppercase font-mono text-zinc-500 mb-0.5">Detected Genre</span>
               <span className="block text-xs font-bold text-cyan-300 truncate">
-                {musicComprehension.extractedGenre}
+                {effectiveGenre}
               </span>
             </div>
 
@@ -410,7 +424,7 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
             <div className="p-2.5 bg-zinc-900/70 border border-zinc-800 rounded-lg">
               <span className="block text-[9px] uppercase font-mono text-zinc-500 mb-0.5">Key & Scale</span>
               <span className="block text-xs font-bold text-purple-300 truncate">
-                {musicComprehension.detectedKey}
+                {effectiveKey}
               </span>
             </div>
 
@@ -418,7 +432,7 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
             <div className="p-2.5 bg-zinc-900/70 border border-zinc-800 rounded-lg">
               <span className="block text-[9px] uppercase font-mono text-zinc-500 mb-0.5">Target Tempo</span>
               <span className="block text-xs font-bold text-amber-300 font-mono">
-                {musicComprehension.detectedBpm} BPM
+                {effectiveBpm} BPM
               </span>
             </div>
 
@@ -426,15 +440,15 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
             <div className="p-2.5 bg-zinc-900/70 border border-zinc-800 rounded-lg">
               <span className="block text-[9px] uppercase font-mono text-zinc-500 mb-0.5">Subwoofer Hz</span>
               <span className="block text-xs font-bold text-emerald-300 truncate" title={musicComprehension.subBassProfile}>
-                35Hz Sub Trench
+                {musicComprehension.subBassProfile}
               </span>
             </div>
 
-            {/* 5. 100-Stage Matrix */}
+            {/* 5. Arrangement Stages */}
             <div className="p-2.5 bg-zinc-900/70 border border-zinc-800 rounded-lg">
               <span className="block text-[9px] uppercase font-mono text-zinc-500 mb-0.5">Melded Stages</span>
               <span className="block text-xs font-bold text-rose-300 font-mono">
-                100 Melded Stages
+                {buildDropCount} Arrangement Stages
               </span>
             </div>
 
@@ -442,7 +456,7 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
             <div className="p-2.5 bg-zinc-900/70 border border-zinc-800 rounded-lg">
               <span className="block text-[9px] uppercase font-mono text-zinc-500 mb-0.5">100-Stem Matrix</span>
               <span className="block text-xs font-bold text-blue-300 font-mono">
-                {selected100Stems.length} Stems Active
+                {selected100Stems.length ? `${selected100Stems.length} Selected` : 'Automatic Selection'}
               </span>
             </div>
           </div>
@@ -463,11 +477,11 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
               <span className="text-xs font-bold text-white uppercase tracking-wider font-mono">
-                Full-Length Song Architecture (At Least 3 Minutes Guaranteed)
+                Full-Length Song Architecture
               </span>
             </div>
             <span className="text-[11px] text-cyan-300 font-mono">
-              100 Mastered Micro-Stages Across 3 Full-Length Movements
+              {buildDropCount} arrangement stages across 3 movements
             </span>
           </div>
 
@@ -591,6 +605,7 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
               onChange={(e) => setWubSpeed(e.target.value)}
               className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-cyan-300 font-mono focus:outline-none focus:border-cyan-500 cursor-pointer"
             >
+              <option value="Auto-detect" className="bg-zinc-900 text-white">Auto-select for genre and tempo</option>
               {WUB_SPEED_OPTIONS.map((w) => (
                 <option key={w.id} value={w.id} className="bg-zinc-900 text-white">
                   {w.label}
@@ -622,14 +637,54 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-xs font-medium text-zinc-400 font-mono">Tempo (BPM)</label>
-              <span className="text-xs font-mono font-bold text-cyan-400">{bpm}</span>
+              <label className="flex items-center gap-1 text-[10px] font-mono text-zinc-500">
+                <input
+                  type="checkbox"
+                  checked={tempoAuto}
+                  onChange={(event) => {
+                    const useAutoTempo = event.currentTarget.checked;
+                    setTempoAuto(useAutoTempo);
+                    if (!useAutoTempo) {
+                      setBpm(musicComprehension.detectedBpm);
+                      setBpmInput(String(musicComprehension.detectedBpm));
+                    }
+                  }}
+                  className="accent-cyan-400"
+                />
+                Auto
+              </label>
+              <label className="flex items-center gap-1 text-[10px] font-mono text-zinc-500">
+                <input
+                  type="number"
+                  min={30}
+                  max={240}
+                  step={1}
+                  value={tempoAuto ? musicComprehension.detectedBpm : bpmInput}
+                  disabled={tempoAuto}
+                  onChange={(event) => {
+                    const value = event.currentTarget.value;
+                    setBpmInput(value);
+                    if (/^\d+$/.test(value)) {
+                      const parsed = Number(value);
+                      if (parsed >= 30 && parsed <= 240) setBpm(parsed);
+                    }
+                  }}
+                  onBlur={() => updateBpm(Number(bpmInput) || bpm)}
+                  aria-label="Tempo in beats per minute"
+                  className="w-16 rounded border border-zinc-700 bg-zinc-950 px-1.5 py-1 text-right text-xs font-bold text-cyan-300 outline-none focus:border-cyan-500"
+                />
+                BPM
+              </label>
             </div>
             <input
               type="range"
-              min={65}
-              max={175}
-              value={bpm}
-              onChange={(e) => setBpm(parseInt(e.target.value, 10))}
+              min={30}
+              max={240}
+              step={1}
+              value={effectiveBpm}
+              onChange={(e) => updateBpm(parseInt(e.target.value, 10))}
+              disabled={tempoAuto}
+              aria-label="Tempo slider"
               className="w-full accent-cyan-400 h-1.5 bg-zinc-800 rounded-lg cursor-pointer"
             />
           </div>
@@ -642,6 +697,7 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
               onChange={(e) => setSelectedKey(e.target.value)}
               className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-zinc-200 focus:outline-none focus:border-cyan-500 cursor-pointer font-mono"
             >
+              <option value="Auto-detect">Auto-detect from prompt</option>
               <option value="D Minor">D Minor (The Holy Grail 35Hz Sub Key)</option>
               <option value="F Minor">F Minor (140 Deep Sub Bass)</option>
               <option value="F# Minor">F# Minor (Cyberpunk / Outrun)</option>
@@ -661,6 +717,7 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
               onChange={(e) => setSelectedVocalStyle(e.target.value)}
               className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-zinc-200 focus:outline-none focus:border-cyan-500 cursor-pointer font-mono"
             >
+              <option value="Auto-detect">Auto-select for genre and mood</option>
               {VOCAL_STYLES.map((v) => (
                 <option key={v} value={v} className="bg-zinc-900 text-white">
                   {v}
@@ -680,7 +737,7 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
               </h4>
             </div>
             <p className="text-[11px] text-zinc-400 font-mono">
-              {selected100Stems.length} of 100 stems selected across 10 families (Sub-Bass, Wubs, Heavy Drums, Percussion, Leads, Chords, Drones, Vocals, Risers, Impacts)
+              {selected100Stems.length ? `${selected100Stems.length} selected sound-design layers` : 'Automatic core stems'} across 10 sound families
             </p>
           </div>
 
@@ -694,7 +751,7 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
           </button>
         </div>
 
-        {/* Advanced Diffusion Engine Parameters */}
+        {/* Advanced lyric controls */}
         <div className="pt-1 border-t border-zinc-800/80">
           <button
             type="button"
@@ -703,63 +760,15 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
           >
             <div className="flex items-center gap-2 font-mono">
               <Cpu size={14} className="text-cyan-400" />
-              <span>DiffRhythm 2 Latent Diffusion Engine Parameters</span>
+              <span>Lyrics and Arrangement Options</span>
             </div>
             {showAdvancedParams ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
           </button>
 
           {showAdvancedParams && (
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 mt-3 bg-zinc-950/80 border border-zinc-800 rounded-xl animate-in fade-in duration-200">
-              {/* Denoising Steps */}
-              <div>
-                <div className="flex items-center justify-between text-xs mb-1">
-                  <span className="text-zinc-400 font-mono">Denoising Steps:</span>
-                  <span className="font-mono text-cyan-400 font-bold">{diffusionSteps}</span>
-                </div>
-                <input
-                  type="range"
-                  min={20}
-                  max={100}
-                  step={5}
-                  value={diffusionSteps}
-                  onChange={(e) => setDiffusionSteps(parseInt(e.target.value, 10))}
-                  className="w-full accent-cyan-400 h-1.5 bg-zinc-800 rounded-lg cursor-pointer"
-                />
-              </div>
-
-              {/* CFG Guidance Scale */}
-              <div>
-                <div className="flex items-center justify-between text-xs mb-1">
-                  <span className="text-zinc-400 font-mono">Guidance Scale (CFG):</span>
-                  <span className="font-mono text-cyan-400 font-bold">{cfgScale.toFixed(1)}</span>
-                </div>
-                <input
-                  type="range"
-                  min={1.0}
-                  max={9.0}
-                  step={0.5}
-                  value={cfgScale}
-                  onChange={(e) => setCfgScale(parseFloat(e.target.value))}
-                  className="w-full accent-cyan-400 h-1.5 bg-zinc-800 rounded-lg cursor-pointer"
-                />
-              </div>
-
-              {/* Solver Algorithm */}
-              <div>
-                <label className="block text-xs text-zinc-400 mb-1 font-mono">ODE Solver Algorithm</label>
-                <select
-                  value={sampler}
-                  onChange={(e) => setSampler(e.target.value as any)}
-                  className="w-full px-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-200 cursor-pointer font-mono"
-                >
-                  <option value="Euler-A">Euler Ancestral (Fast)</option>
-                  <option value="DPM++ 2M SDE">DPM++ 2M SDE (High Fidelity)</option>
-                  <option value="DDIM">DDIM (Deterministic)</option>
-                </select>
-              </div>
-
+            <div className="grid grid-cols-1 gap-4 p-4 mt-3 bg-zinc-950/80 border border-zinc-800 rounded-xl animate-in fade-in duration-200">
               {/* Custom Lyrics Option */}
-              <div className="col-span-1 md:col-span-3 pt-3 border-t border-zinc-800/80">
+              <div className="col-span-1 pt-3 border-t border-zinc-800/80">
                 <div className="flex items-center gap-4 mb-2">
                   <span className="text-xs text-zinc-400 font-mono">Lyric Generation Mode:</span>
                   <label className="flex items-center gap-1.5 text-xs text-zinc-300 cursor-pointer">
@@ -805,10 +814,7 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
               <div className="flex items-center justify-between text-xs">
                 <span className="flex items-center gap-2 text-cyan-300 font-mono font-semibold">
                   <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-ping" />
-                  <span>
-                    DiffRhythm 2 Denoising 100 Stages & 100 Stems... Step{' '}
-                    {Math.round((diffusionStepProgress / 100) * diffusionSteps)} / {diffusionSteps}
-                  </span>
+                  <span>{generationStatus}</span>
                 </span>
                 <span className="text-cyan-400 font-mono">{diffusionStepProgress}%</span>
               </div>
@@ -819,7 +825,7 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
                 />
               </div>
               <p className="text-[11px] text-zinc-400 text-center font-mono">
-                Assembling 100 micro-stages, 35Hz rolling sub-wubs, gunshot snares, and 3+ minutes of master audio...
+                Arrangement, stem balancing, and playback are processed in sequence.
               </p>
             </div>
           ) : (
@@ -828,7 +834,7 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
               className="w-full flex items-center justify-center gap-2.5 py-4 px-6 bg-gradient-to-r from-cyan-500 via-blue-600 to-indigo-600 hover:from-cyan-400 hover:via-blue-500 hover:to-indigo-500 text-black font-extrabold text-sm uppercase tracking-wider rounded-xl shadow-xl shadow-cyan-500/10 transition-all transform active:scale-[0.99] cursor-pointer"
             >
               <Sparkles size={18} />
-              <span>Generate Full 3-Minute 100-Stage Dubstep Song</span>
+              <span>Generate {effectiveGenre} Composition</span>
             </button>
           )}
         </div>
@@ -1002,7 +1008,7 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
                     </span>
                   </h3>
                   <p className="text-xs text-zinc-400 font-mono">
-                    {evolutionState.soundSystemMasteryLevel} · {evolutionState.vocabularySize} Learned Acoustic Tokens · {evolutionState.totalCharactersParsed.toLocaleString()} Characters Processed
+                    {evolutionState.currentGeneration} generations · {evolutionState.vocabularySize} prompt tokens · {evolutionState.totalCharactersParsed.toLocaleString()} prompt characters
                   </p>
                 </div>
               </div>
@@ -1022,9 +1028,9 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
                 <div className="flex items-center justify-between">
                   <h4 className="text-xs font-bold text-white uppercase tracking-wider font-mono flex items-center gap-2">
                     <Sparkles size={14} className="text-cyan-400" />
-                    <span>The Evolved 7-Step Mastered Dubstep Creation Pipeline</span>
+                    <span>Generation and Feedback Pipeline</span>
                   </h4>
-                  <span className="text-[10px] font-mono text-emerald-400">Continuous Self-Improvement</span>
+                  <span className="text-[10px] font-mono text-emerald-400">Automatic listening + rating signals</span>
                 </div>
 
                 <div className="space-y-2">
@@ -1057,7 +1063,7 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
               <div className="space-y-3 pt-3 border-t border-zinc-800/80">
                 <h4 className="text-xs font-bold text-white uppercase tracking-wider font-mono flex items-center gap-2">
                   <Radio size={14} className="text-amber-400" />
-                  <span>Learned Underground Acoustic Vocabulary & Sound Tokens ({evolutionState.vocabularySize})</span>
+                  <span>Prompt Vocabulary Memory ({evolutionState.vocabularySize})</span>
                 </h4>
 
                 <div className="flex flex-wrap gap-1.5">
@@ -1094,7 +1100,7 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
                           {h.detectedBpm} BPM · {h.detectedKey}
                         </span>
                         <span className="px-2 py-0.5 rounded bg-zinc-950 text-emerald-400 border border-zinc-800">
-                          Score: {h.qualityScore}%
+                          {h.feedback === 'like' ? 'Liked' : h.feedback === 'dislike' ? 'Disliked' : h.listeningRatio !== undefined ? `${Math.round(h.listeningRatio * 100)}% heard` : 'Not rated'}
                         </span>
                       </div>
                     </div>
@@ -1106,7 +1112,7 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
             {/* Footer */}
             <div className="p-4 border-t border-zinc-800 bg-zinc-950 flex items-center justify-between shrink-0">
               <span className="text-[11px] font-mono text-zinc-500">
-                DiffRhythm 2 Neural Evolution Model v2.4 · Auto-syncs on every generation
+                Local adaptive memory · Listening and explicit ratings tune future mixes
               </span>
               <button
                 type="button"
